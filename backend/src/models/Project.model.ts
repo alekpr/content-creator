@@ -1,0 +1,115 @@
+import { Schema, model, Document } from 'mongoose';
+import type {
+  ProjectInput,
+  StageDoc,
+  ProjectStatus,
+  ProjectOutput,
+  GenerationAttempt,
+} from '@content-creator/shared';
+
+// ─── Sub-schemas ──────────────────────────────────────────────────────────────
+
+const GenerationAttemptSchema = new Schema<GenerationAttempt>(
+  {
+    attemptNumber: { type: Number, required: true },
+    promptUsed: { type: Schema.Types.Mixed, required: true },
+    outputPaths: [{ type: String }],
+    costUSD: { type: Number, required: true, default: 0 },
+    durationMs: { type: Number, required: true },
+    createdAt: { type: Date, required: true },
+  },
+  { _id: false }
+);
+
+const StageDockSchema = new Schema<StageDoc>(
+  {
+    status: {
+      type: String,
+      enum: ['pending', 'prompt_ready', 'generating', 'review', 'approved', 'failed', 'skipped'],
+      required: true,
+      default: 'pending',
+    },
+    prompt: { type: Schema.Types.Mixed, default: '' },
+    result: { type: Schema.Types.Mixed },
+    reviewData: {
+      previewUrl: String,
+      previewUrls: [String],
+      metadata: Schema.Types.Mixed,
+    },
+    attempts: { type: [GenerationAttemptSchema], default: [] },
+    error: String,
+    startedAt: Date,
+    completedAt: Date,
+  },
+  { _id: false }
+);
+
+// ─── Main Project Schema ──────────────────────────────────────────────────────
+
+export interface ProjectDocument extends Document {
+  title: string;
+  status: ProjectStatus;
+  input: ProjectInput;
+  stages: {
+    storyboard: StageDoc;
+    images: StageDoc;
+    videos: StageDoc;
+    voiceover: StageDoc;
+    music: StageDoc;
+    assembly: StageDoc;
+  };
+  output?: ProjectOutput;
+  costUSD: number;
+  createdAt: Date;
+  updatedAt: Date;
+  completedAt?: Date;
+}
+
+const ProjectSchema = new Schema<ProjectDocument>(
+  {
+    title: { type: String, required: true },
+    status: {
+      type: String,
+      enum: ['in_progress', 'completed', 'archived'],
+      default: 'in_progress',
+    },
+    input: {
+      topic: { type: String, required: true },
+      platform: { type: String, enum: ['youtube', 'tiktok', 'instagram', 'linkedin'], required: true },
+      duration: { type: String, enum: ['30s', '60s', '3min'], required: true },
+      style: { type: String, enum: ['cinematic', 'educational', 'promotional', 'documentary'], required: true },
+      language: { type: String, enum: ['en', 'th', 'ja', 'zh', 'ko'], required: true },
+      voice: { type: String, enum: ['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede'], required: true },
+      includeMusic: { type: Boolean, required: true },
+    },
+    stages: {
+      storyboard: { type: StageDockSchema, default: () => ({ status: 'pending', prompt: '', attempts: [] }) },
+      images:     { type: StageDockSchema, default: () => ({ status: 'pending', prompt: '', attempts: [] }) },
+      videos:     { type: StageDockSchema, default: () => ({ status: 'pending', prompt: '', attempts: [] }) },
+      voiceover:  { type: StageDockSchema, default: () => ({ status: 'pending', prompt: '', attempts: [] }) },
+      music:      { type: StageDockSchema, default: () => ({ status: 'pending', prompt: '', attempts: [] }) },
+      assembly:   { type: StageDockSchema, default: () => ({ status: 'pending', prompt: '', attempts: [] }) },
+    },
+    output: {
+      filePath: String,
+      fileUrl: String,
+      durationSeconds: Number,
+      fileSizeBytes: Number,
+    },
+    costUSD: { type: Number, default: 0 },
+    completedAt: Date,
+  },
+  {
+    timestamps: true,
+    versionKey: false,
+  }
+);
+
+// ─── Indexes ──────────────────────────────────────────────────────────────────
+
+ProjectSchema.index({ status: 1 });
+ProjectSchema.index({ createdAt: -1 });
+
+// ─── Model ────────────────────────────────────────────────────────────────────
+
+export const ProjectModel = model<ProjectDocument>('Project', ProjectSchema);

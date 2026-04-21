@@ -9,16 +9,19 @@ A **semi-automatic AI video generation platform** that transforms a simple topic
 - **6-Stage AI Pipeline** — Storyboard → Images → Videos → Voiceover → Music → Assembly
 - **Human-in-the-Loop** — Review and approve every stage; edit prompts and regenerate at any step
 - **Per-Stage Model Selection** — Choose AI model tier per stage before generating (e.g. Flash Lite / Flash / Pro for storyboard; Veo Lite / Fast / Full for video)
+- **Manual Upload (Images & Videos)** — Skip AI generation for any scene by uploading your own image or video clip directly; manual scenes are marked with an emerald badge and excluded from AI generation
+- **Pre-Generation Setup Panel** — Before generating, review all scenes in a grid; choose per-scene whether to let AI generate or upload your own asset
 - **Image Reference Upload** — Upload a reference image per scene for Stage 2; multimodal Gemini call uses it as visual context
+- **Platform Aspect Ratio** — Images and videos are generated at the correct aspect ratio per platform: 16:9 for YouTube/LinkedIn, 9:16 for TikTok/Instagram; thumbnails in the UI follow the same ratio
 - **Version Tracking & Selection** — Every regeneration creates a new versioned file (v1, v2, …); version badges let you switch which version flows into the next stage without losing any previous result
 - **Download Buttons** — Download any generated asset (image, video clip, audio file) directly from the review panel
 - **Real-time Progress** — WebSocket events stream progress percentage and status updates to the UI
-- **Cost Tracking** — Estimated cost shown before generation; actual cost tracked after each stage
+- **Cost Tracking** — Estimated cost shown before generation; actual cost tracked per stage and displayed on the dashboard (actual vs. estimate)
 - **Multi-Platform Support** — YouTube (16:9), TikTok/Instagram (9:16), LinkedIn
 - **Multi-Language** — English, Thai, Japanese, Chinese, Korean
 - **Voice Selection** — 5 AI voices: Puck, Charon, Kore, Fenrir, Aoede
 - **Optional Background Music** — Mood-driven AI music generation, mixable with voiceover
-- **Scene-Level Regeneration** — Regenerate individual scenes without restarting the whole pipeline
+- **Scene-Level Regeneration** — Regenerate individual scenes without restarting the whole pipeline; Refine (append to original prompt) or Full (replace prompt entirely)
 - **Generation History** — All attempts stored with prompts, costs, and metadata
 - **Monorepo Workspace** — Shared TypeScript types between frontend and backend
 - **Docker Ready** — Full `docker-compose` setup for local and production deployment
@@ -105,14 +108,17 @@ A **semi-automatic AI video generation platform** that transforms a simple topic
 
 ### Stage 2 — Images
 - **Model**: `gemini-2.5-flash-lite` or `gemini-2.5-flash` *(selectable)*  
-- One 16:9 PNG generated per scene, all in parallel  
-- **Reference image** — upload a JPEG/PNG/WebP reference per scene; the model uses it as a multimodal input alongside the prompt  
+- One PNG generated per scene (16:9 or 9:16 depending on platform), all in parallel  
+- **Reference image** — upload a JPEG/PNG/WebP reference per scene; Gemini uses it as multimodal input; reference is auto-resized to target dimensions before sending  
+- **Manual upload** — upload your own image for any scene; that scene is skipped by AI generation; removable to revert to AI  
+- **FFmpeg post-crop** — Gemini output is always post-cropped to the exact target resolution to guarantee correct orientation  
 - **Cost**: ~$0.039 per image
 
 ### Stage 3 — Videos
 - **Model**: `veo-3.1-lite` / `fast` / `full` `-generate-preview` *(selectable)*  
 - Each scene submitted as a BullMQ job; worker polls until complete  
 - Aspect ratio: 16:9 (YouTube/LinkedIn) or 9:16 (TikTok/Instagram)  
+- **Manual upload** — upload your own MP4/WebM/MOV for any scene; those scenes are excluded from Veo generation  
 - **Cost**: ~$0.10 per second of video
 
 ### Stage 4 — Voiceover
@@ -153,8 +159,9 @@ A **semi-automatic AI video generation platform** that transforms a simple topic
 
 ### Prerequisites
 - [Node.js 22+](https://nodejs.org)
-- [Docker & Docker Compose](https://docs.docker.com/get-docker/)
+- [Docker & Docker Compose](https://docs.docker.com/get-docker/) — or install services locally (see [macOS Local Setup](#-macos-local-setup-without-docker) below)
 - [Google GenAI API Key](https://aistudio.google.com/app/apikey) (with Gemini, Veo, Lyria access)
+- FFmpeg — required for image/video processing (see below)
 
 ### Option A: Docker Compose (Recommended)
 
@@ -194,6 +201,100 @@ docker-compose up mongo redis -d
 npm run dev
 # Backend  →  http://localhost:3001
 # Frontend →  http://localhost:5173
+```
+
+---
+
+## 🍎 macOS Local Setup (without Docker)
+
+Install all dependencies natively using [Homebrew](https://brew.sh).
+
+### 1. Install Homebrew (if not installed)
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+### 2. Install FFmpeg
+
+FFmpeg is required for image resizing, aspect-ratio cropping, and video assembly.
+
+```bash
+brew install ffmpeg
+
+# Verify installation
+ffmpeg -version
+# → ffmpeg version 7.x … built with Apple clang …
+
+# Default install path (used in config)
+which ffmpeg   # → /opt/homebrew/bin/ffmpeg
+```
+
+> The backend hardcodes `FFMPEG_BIN = '/opt/homebrew/bin/ffmpeg'`. If yours is at a different path (e.g. Intel Mac: `/usr/local/bin/ffmpeg`), update that constant in `backend/src/pipeline/stage2-images.ts` and `backend/src/pipeline/stage6-assembly.ts`.
+
+### 3. Install Redis
+
+Redis is used by BullMQ as the job queue backend.
+
+```bash
+brew install redis
+
+# Start Redis as a background service (auto-restart on login)
+brew services start redis
+
+# Verify it's running
+redis-cli ping   # → PONG
+
+# Stop / restart
+brew services stop redis
+brew services restart redis
+```
+
+Default connection: `redis://localhost:6379`
+
+### 4. Install MongoDB
+
+MongoDB stores all project data, stage results, and generation history.
+
+```bash
+# Add the MongoDB tap
+brew tap mongodb/brew
+brew update
+
+# Install MongoDB Community Edition
+brew install mongodb-community@7.0
+
+# Start MongoDB as a background service
+brew services start mongodb-community@7.0
+
+# Verify it's running
+mongosh --eval "db.adminCommand({ ping: 1 })"
+# → { ok: 1 }
+
+# Stop / restart
+brew services stop mongodb-community@7.0
+brew services restart mongodb-community@7.0
+```
+
+Default connection: `mongodb://localhost:27017/ai-video-creator`
+
+### 5. Confirm All Services
+
+```bash
+brew services list
+# NAME                     STATUS   USER
+# mongodb-community@7.0    started  yourname
+# redis                    started  yourname
+```
+
+### 6. Start the App
+
+```bash
+# From project root
+npm install
+cp backend/.env.example backend/.env
+# Edit backend/.env — add GEMINI_API_KEY, verify MONGODB_URI and REDIS_URL
+npm run dev
 ```
 
 ---
@@ -274,11 +375,15 @@ npm run preview --workspace=frontend # Preview production build
 | `POST` | `/api/projects/:id/stages/images/scenes/:sceneId/regenerate` | Regenerate a single scene image |
 | `POST` | `/api/projects/:id/stages/videos/scenes/:sceneId/regenerate` | Regenerate a single scene video |
 | `PATCH` | `/api/projects/:id/stages/storyboard/scenes/:sceneId` | Edit individual storyboard scene fields |
-| `PATCH` | `/api/projects/:id/stages/images/scenes/:sceneId/reference` | **[New]** Upload reference image for a scene |
-| `DELETE` | `/api/projects/:id/stages/images/scenes/:sceneId/reference` | **[New]** Remove reference image for a scene |
-| `POST` | `/api/projects/:id/stages/images/scenes/:sceneId/select` | **[New]** Select a specific version as the active image |
-| `POST` | `/api/projects/:id/stages/videos/scenes/:sceneId/select` | **[New]** Select a specific version as the active video |
-| `POST` | `/api/projects/:id/stages/:stage/select` | **[New]** Select a specific version for voiceover or music |
+| `PATCH` | `/api/projects/:id/stages/images/scenes/:sceneId/reference` | Upload reference image for a scene |
+| `DELETE` | `/api/projects/:id/stages/images/scenes/:sceneId/reference` | Remove reference image for a scene |
+| `POST` | `/api/projects/:id/stages/images/scenes/:sceneId/upload` | **[New]** Upload your own image for a scene (bypasses AI) |
+| `DELETE` | `/api/projects/:id/stages/images/scenes/:sceneId/upload` | **[New]** Remove manual image upload (reverts to AI) |
+| `POST` | `/api/projects/:id/stages/videos/scenes/:sceneId/upload` | **[New]** Upload your own video clip for a scene (bypasses Veo) |
+| `DELETE` | `/api/projects/:id/stages/videos/scenes/:sceneId/upload` | **[New]** Remove manual video upload (reverts to Veo) |
+| `POST` | `/api/projects/:id/stages/images/scenes/:sceneId/select` | Select a specific version as the active image |
+| `POST` | `/api/projects/:id/stages/videos/scenes/:sceneId/select` | Select a specific version as the active video |
+| `POST` | `/api/projects/:id/stages/:stage/select` | Select a specific version for voiceover or music |
 
 ### WebSocket Events (Socket.io)
 
@@ -314,9 +419,11 @@ content-creator/
 │       ├── pages/            # Home + Project pages
 │       ├── components/
 │       │   └── StagePanel/   # Per-stage review panels
-│       │       ├── ModelPicker.tsx         # Per-stage AI model selector
-│       │       ├── SceneReferenceUpload.tsx # Reference image upload grid
-│       │       ├── VersionBadges.tsx        # v1/v2/… version switcher
+│       │       ├── ModelPicker.tsx              # Per-stage AI model selector
+│       │       ├── SceneReferenceUpload.tsx      # Reference image upload grid
+│       │       ├── SceneImageSetupPanel.tsx      # Pre-generation setup: upload or AI per scene (images)
+│       │       ├── SceneVideoSetupPanel.tsx      # Pre-generation setup: upload or AI per scene (videos)
+│       │       ├── VersionBadges.tsx             # v1/v2/… version switcher
 │       │       ├── ReviewImages.tsx
 │       │       ├── ReviewVideos.tsx
 │       │       ├── ReviewAudio.tsx

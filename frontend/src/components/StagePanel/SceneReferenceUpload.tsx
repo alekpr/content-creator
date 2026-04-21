@@ -28,6 +28,7 @@ export function SceneReferenceUpload({ project, onRefresh }: SceneReferenceUploa
             sceneId={scene.id}
             refFilename={refImages[String(scene.id)]}
             onRefresh={onRefresh}
+            isPortrait={project.input.platform === 'tiktok'}
           />
         ))}
       </div>
@@ -40,14 +41,16 @@ interface SceneRefCardProps {
   sceneId: number;
   refFilename?: string;
   onRefresh: () => void;
+  isPortrait: boolean;
 }
 
-function SceneRefCard({ projectId, sceneId, refFilename, onRefresh }: SceneRefCardProps) {
+function SceneRefCard({ projectId, sceneId, refFilename, onRefresh, isPortrait }: SceneRefCardProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const refUrl = refFilename ? `${API_BASE}/api/files/${projectId}/${refFilename}` : null;
+  const thumbStyle = isPortrait ? { aspectRatio: '9/16' } : { aspectRatio: '16/9' };
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -91,7 +94,8 @@ function SceneRefCard({ projectId, sceneId, refFilename, onRefresh }: SceneRefCa
           <img
             src={refUrl}
             alt={`Scene ${sceneId} reference`}
-            className="w-full aspect-video object-cover"
+            style={thumbStyle}
+            className="w-full object-cover"
           />
           {/* Overlay on hover */}
           <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100">
@@ -118,7 +122,8 @@ function SceneRefCard({ projectId, sceneId, refFilename, onRefresh }: SceneRefCa
         <button
           onClick={() => inputRef.current?.click()}
           disabled={loading}
-          className="w-full aspect-video flex flex-col items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50"
+          style={thumbStyle}
+          className="w-full flex flex-col items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50"
         >
           <span className="text-2xl leading-none">{loading ? '…' : '+'}</span>
           <span className="text-xs mt-1">Scene {sceneId} reference</span>

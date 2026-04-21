@@ -15,7 +15,7 @@ import fs from 'fs';
 import path from 'path';
 import { env } from '../config/env.js';
 import { ensureDir } from '../utils/file.helper.js';
-import type { StageKey, Storyboard, StageDoc, CostBreakdown, StageCostEntry, StageModelConfig } from '@content-creator/shared';
+import type { StageKey, Storyboard, StageDoc, CostBreakdown, StageCostEntry, StageModelConfig, VoiceoverStageConfig, AssemblyStageConfig } from '@content-creator/shared';
 import { DEFAULT_STAGE_MODELS } from '@content-creator/shared';
 
 export const stagesRouter = Router({ mergeParams: true });
@@ -250,10 +250,11 @@ async function runGeneration(projectId: string, stageKey: StageKey, project: Pro
       case 'images': {
         const storyboard = project.stages.storyboard.result as Storyboard | undefined;
         if (!storyboard) throw new Error('Storyboard not approved yet');
-        const prompts = buildImagePrompts(storyboard);
+        const prompts = buildImagePrompts(storyboard, project.input.platform);
         const model = mc.images ?? DEFAULT_STAGE_MODELS.images;
         const refImages = (project.stages.images.referenceImages ?? {}) as Record<string, string>;
-        const results = await generateImages(projectId, prompts, onProgress, model, refImages);
+        const manualImages = (project.stages.images.stageConfig as Record<string, unknown> | undefined)?.manualImages as Record<string, string> ?? {};
+        const results = await generateImages(projectId, prompts, onProgress, model, refImages, manualImages, project.input.platform);
         emitStageResult({
           projectId, stageKey,
           previewUrls: results.map(r => r.previewUrl),
@@ -275,9 +276,21 @@ async function runGeneration(projectId: string, stageKey: StageKey, project: Pro
           return { ...img, filename, imageBase64: base64, previewUrl: `/api/files/${projectId}/scene_${img.sceneId}_ref.png` };
         });
 
+        // Skip scenes that already have a manual video upload
+        const manualVideos = (project.stages.videos.stageConfig as Record<string, unknown> | undefined)?.manualVideos as Record<string, string> ?? {};
+        const manualSceneIds = new Set(Object.keys(manualVideos).map(Number));
+        const scenesToGenerate = storyboard.scenes.filter(s => !manualSceneIds.has(s.id));
+
         const attemptNumber = (project.stages.videos.attempts?.length ?? 0) + 1;
         const videoModel = mc.videos ?? DEFAULT_STAGE_MODELS.videos;
-        const jobIds = await submitVideoGenerationJobs(projectId, storyboard.scenes, sceneImagesWithBase64, project.input.platform, attemptNumber, videoModel);
+
+        if (scenesToGenerate.length === 0) {
+          // All scenes are manual — just set status to review
+          await ProjectModel.findByIdAndUpdate(projectId, { 'stages.videos.status': 'review' });
+          break;
+        }
+
+        const jobIds = await submitVideoGenerationJobs(projectId, scenesToGenerate, sceneImagesWithBase64, project.input.platform, attemptNumber, videoModel);
 
         await ProjectModel.findByIdAndUpdate(projectId, {
           'stages.videos.status': 'generating',
@@ -289,7 +302,8 @@ async function runGeneration(projectId: string, stageKey: StageKey, project: Pro
       case 'voiceover': {
         const storyboard = project.stages.storyboard.result as Storyboard | undefined;
         if (!storyboard) throw new Error('Storyboard not approved yet');
-        const config = buildVoiceoverScript(storyboard, project.input.voice, project.input.language);
+        const stageConfig = (project.stages.voiceover.stageConfig ?? {}) as VoiceoverStageConfig;
+        const config = buildVoiceoverScript(storyboard, project.input.voice, project.input.language, stageConfig);
         const voiceModel = mc.voiceover ?? DEFAULT_STAGE_MODELS.voiceover;
         const result = await generateVoiceover(projectId, config, onProgress, voiceModel);
         emitStageResult({ projectId, stageKey, previewUrls: [result.previewUrl], metadata: {} });
@@ -311,9 +325,13 @@ async function runGeneration(projectId: string, stageKey: StageKey, project: Pro
         const videoPaths = videoResults.sort((a, b) => a.sceneId - b.sceneId).map(r => r.videoPath);
         const voicePath = (freshProject.stages.voiceover.result as { audioPath: string } | undefined)?.audioPath;
         const musicPath = (freshProject.stages.music.result as { musicPath: string } | undefined)?.musicPath ?? null;
+        const sceneTimings = (freshProject.stages.voiceover.result as { sceneTimings?: import('@content-creator/shared').VoiceoverSceneTiming[] } | undefined)?.sceneTimings;
 
         if (!voicePath) throw new Error('Voiceover not approved yet');
         if (videoPaths.length === 0) throw new Error('No video clips found');
+
+        // Load persisted stageConfig (saved by PATCH /assembly/settings)
+        const savedConfig = (freshProject.stages.assembly.stageConfig ?? {}) as AssemblyStageConfig;
 
         const assemblyConfig = {
           voiceVolume: 1.0,
@@ -322,6 +340,7 @@ async function runGeneration(projectId: string, stageKey: StageKey, project: Pro
           fadeOutSeconds: 1.0,
           outputFormat: 'mp4' as const,
           outputQuality: 'standard' as const,
+          ...savedConfig,
           ...(body.config as object | undefined),
         };
 
@@ -331,7 +350,8 @@ async function runGeneration(projectId: string, stageKey: StageKey, project: Pro
           voicePath,
           musicPath,
           assemblyConfig,
-          percent => emitStageProgress({ projectId, stageKey, message: `Assembling... ${percent}%`, percent })
+          percent => emitStageProgress({ projectId, stageKey, message: `Assembling... ${percent}%`, percent }),
+          sceneTimings,
         );
 
         emitStageResult({ projectId, stageKey, previewUrls: [result.fileUrl], metadata: {} });
@@ -379,19 +399,27 @@ stagesRouter.post('/:stage/approve', validateStage, async (req, res, next) => {
       [`stages.${stageKey}.completedAt`]: new Date(),
     };
 
-    // Unlock next stage
+    // Unlock next stage — only if it has never been started (pending).
+    // If it already has content (prompt_ready / review / approved / etc.) from a
+    // previous run, leave it untouched so the user doesn't lose work.
     const nextStage = getNextStage(stageKey);
     if (nextStage) {
-      updates[`stages.${nextStage}.status`] = 'prompt_ready';
-      // Pre-build prompt for next stage if possible
-      const nextPrompt = buildNextStagePrompt(nextStage, project);
-      if (nextPrompt) updates[`stages.${nextStage}.prompt`] = nextPrompt;
+      const nextStageDoc = project.stages[nextStage] as StageDoc;
+      if (nextStageDoc.status === 'pending') {
+        updates[`stages.${nextStage}.status`] = 'prompt_ready';
+        // Pre-build prompt for next stage if possible
+        const nextPrompt = buildNextStagePrompt(nextStage, project);
+        if (nextPrompt) updates[`stages.${nextStage}.prompt`] = nextPrompt;
+      }
     }
 
     await ProjectModel.findByIdAndUpdate(req.params.id, updates);
     emitStageStatus({ projectId: req.params.id, stageKey, status: 'approved', message: 'Stage approved' });
     if (nextStage) {
-      emitStageStatus({ projectId: req.params.id, stageKey: nextStage, status: 'prompt_ready', message: 'Ready for review' });
+      const nextStageDoc = project.stages[nextStage] as StageDoc;
+      if (nextStageDoc.status === 'pending') {
+        emitStageStatus({ projectId: req.params.id, stageKey: nextStage, status: 'prompt_ready', message: 'Ready for review' });
+      }
     }
 
     res.json({ approved: true, nextStage: nextStage ?? null });
@@ -468,7 +496,77 @@ stagesRouter.post('/:stage/reopen', validateStage, async (req, res, next) => {
     res.json({ reopened: true });
   } catch (err) { next(err); }
 });
+// ─── POST /stages/images/scenes/:sceneId/upload (direct manual upload — no AI) ────────
 
+stagesRouter.post('/images/scenes/:sceneId/upload', validate(ReferenceImageSchema), async (req, res, next) => {
+  try {
+    const projectId = (req.params as Record<string, string>)['id'];
+    const sceneId = parseInt(req.params.sceneId as string, 10);
+    const { imageBase64, mimeType } = req.body as { imageBase64: string; mimeType: string };
+
+    const project = await ProjectModel.findById(projectId);
+    if (!project) { res.status(404).json({ error: 'Project not found' }); return; }
+
+    const ext = mimeType === 'image/png' ? 'png' : mimeType === 'image/webp' ? 'webp' : 'jpg';
+    const existingVersions = (project.stages.images.sceneVersions ?? {}) as Record<string, string[]>;
+    const versionNumber = (existingVersions[String(sceneId)] ?? []).length + 1;
+    const filename = `scene_${sceneId}_upload_v${versionNumber}.${ext}`;
+    const imageDir = path.join(env.TEMP_DIR, projectId);
+    ensureDir(imageDir);
+    const imagePath = path.join(imageDir, filename);
+    fs.writeFileSync(imagePath, Buffer.from(imageBase64, 'base64'));
+    const previewUrl = `/api/files/${projectId}/${filename}`;
+
+    // Upsert into result[]
+    const imageResults = (project.stages.images.result as Array<{ sceneId: number; imagePath: string; filename: string; previewUrl: string }> | undefined) ?? [];
+    const idx = imageResults.findIndex(r => r.sceneId === sceneId);
+    const entry = { sceneId, imagePath, filename, previewUrl };
+    if (idx >= 0) { imageResults[idx] = entry; } else { imageResults.push(entry); }
+
+    const newVersions = { ...existingVersions, [String(sceneId)]: [...(existingVersions[String(sceneId)] ?? []), filename] };
+    const previewUrls = (project.stages.images.reviewData?.previewUrls ?? []) as string[];
+    const urlIdx = previewUrls.findIndex(u => u.includes(`scene_${sceneId}_`));
+    if (urlIdx >= 0) { previewUrls[urlIdx] = previewUrl; } else { previewUrls.push(previewUrl); }
+
+    // Store in stageConfig.manualImages so generateImages() can skip this scene
+    const stageConfig = (project.stages.images.stageConfig ?? {}) as Record<string, unknown>;
+    const manualImages = { ...((stageConfig.manualImages ?? {}) as Record<string, string>), [String(sceneId)]: filename };
+
+    project.stages.images.result = imageResults;
+    project.stages.images.sceneVersions = newVersions;
+    project.stages.images.reviewData = { previewUrls };
+    project.stages.images.stageConfig = { ...stageConfig, manualImages };
+    project.markModified('stages.images.result');
+    project.markModified('stages.images.sceneVersions');
+    project.markModified('stages.images.reviewData');
+    project.markModified('stages.images.stageConfig');
+    await project.save();
+
+    res.json({ filename, previewUrl });
+  } catch (err) { next(err); }
+});
+
+// ─── DELETE /stages/images/scenes/:sceneId/upload ─────────────────────────────────
+
+stagesRouter.delete('/images/scenes/:sceneId/upload', async (req, res, next) => {
+  try {
+    const projectId = (req.params as Record<string, string>)['id'];
+    const sceneId = parseInt(req.params.sceneId as string, 10);
+
+    const project = await ProjectModel.findById(projectId);
+    if (!project) { res.status(404).json({ error: 'Project not found' }); return; }
+
+    const stageConfig = (project.stages.images.stageConfig ?? {}) as Record<string, unknown>;
+    const manualImages = { ...((stageConfig.manualImages ?? {}) as Record<string, string>) };
+    delete manualImages[String(sceneId)];
+
+    project.stages.images.stageConfig = { ...stageConfig, manualImages };
+    project.markModified('stages.images.stageConfig');
+    await project.save();
+
+    res.json({ removed: true });
+  } catch (err) { next(err); }
+});
 // ─── PATCH /stages/images/scenes/:sceneId/reference ─────────────────────────
 
 stagesRouter.patch('/images/scenes/:sceneId/reference', validate(ReferenceImageSchema), async (req, res, next) => {
@@ -520,12 +618,40 @@ stagesRouter.post('/images/scenes/:sceneId/regenerate', async (req, res, next) =
   try {
     const projectId = (req.params as Record<string, string>)['id'];
     const sceneId = parseInt(req.params.sceneId as string, 10);
-    const prompt = req.body.prompt as string | undefined;
-    if (!prompt) { res.status(400).json({ error: 'prompt is required' }); return; }
+    // prompt: full replacement; additionalPrompt: appended on top of original
+    const { prompt, additionalPrompt, model: bodyModel, refineFromCurrent } = req.body as {
+      prompt?: string;
+      additionalPrompt?: string;
+      model?: string;
+      refineFromCurrent?: boolean;
+    };
 
     const project = await ProjectModel.findById(projectId);
-    const imageModel = (project?.modelConfig as Partial<StageModelConfig> | undefined)?.images ?? DEFAULT_STAGE_MODELS.images;
-    const result = await regenerateSceneImage(projectId, sceneId, prompt, imageModel);
+    if (!project) { res.status(404).json({ error: 'Project not found' }); return; }
+
+    // Model: body override → project modelConfig → default
+    const imageModel = (bodyModel as import('@content-creator/shared').ImageModel | undefined)
+      ?? (project.modelConfig as Partial<StageModelConfig> | undefined)?.images
+      ?? DEFAULT_STAGE_MODELS.images;
+
+    // Resolve prompt: either explicit full prompt, or original prompt + additional details
+    let finalPrompt: string | undefined = prompt;
+    if (!finalPrompt) {
+      // Get the original prompt from storyboard
+      const storyboard = project.stages.storyboard.result as import('@content-creator/shared').Storyboard | undefined;
+      const scene = storyboard?.scenes.find(s => s.id === sceneId);
+      const aspectRatio = project.input.platform === 'tiktok' ? '9:16' : '16:9';
+      const orientation = project.input.platform === 'tiktok' ? 'vertical portrait orientation' : 'horizontal landscape orientation';
+      const originalPrompt = scene
+        ? `${scene.visual_prompt}, ${scene.mood}, cinematic, high quality, ${aspectRatio} aspect ratio, ${orientation}`
+        : undefined;
+      if (!originalPrompt) { res.status(400).json({ error: 'No storyboard prompt found; provide prompt explicitly' }); return; }
+      finalPrompt = additionalPrompt
+        ? `${originalPrompt}. Additional details: ${additionalPrompt}`
+        : originalPrompt;
+    }
+
+    const result = await regenerateSceneImage(projectId, sceneId, finalPrompt, imageModel, !!refineFromCurrent);
     res.json(result);
   } catch (err) { next(err); }
 });
@@ -534,8 +660,34 @@ stagesRouter.post('/images/scenes/:sceneId/regenerate', async (req, res, next) =
 
 stagesRouter.post('/videos/scenes/:sceneId/regenerate', async (req, res, next) => {
   try {
+    const projectId = (req.params as Record<string, string>)['id'];
     const sceneId = parseInt(req.params.sceneId as string, 10);
-    await regenerateSceneVideo((req.params as Record<string, string>)['id'], sceneId, req.body.prompt as string | undefined);
+    const { prompt, additionalPrompt, model: bodyModel } = req.body as {
+      prompt?: string;
+      additionalPrompt?: string;
+      model?: string;
+    };
+
+    const project = await ProjectModel.findById(projectId);
+    if (!project) { res.status(404).json({ error: 'Project not found' }); return; }
+
+    // Model: body override → project modelConfig → default
+    const videoModel = (bodyModel as import('@content-creator/shared').VideoModel | undefined)
+      ?? (project.modelConfig as Partial<StageModelConfig> | undefined)?.videos
+      ?? DEFAULT_STAGE_MODELS.videos;
+
+    // Resolve final prompt
+    let finalPrompt: string | undefined = prompt;
+    if (!finalPrompt && additionalPrompt) {
+      const storyboard = project.stages.storyboard.result as import('@content-creator/shared').Storyboard | undefined;
+      const scene = storyboard?.scenes.find(s => s.id === sceneId);
+      if (scene) {
+        const base = `${scene.visual_prompt}. Camera: ${scene.camera_motion}. Mood: ${scene.mood}. Cinematic.`;
+        finalPrompt = `${base} Additional details: ${additionalPrompt}`;
+      }
+    }
+
+    await regenerateSceneVideo(projectId, sceneId, finalPrompt, videoModel);
     res.json({ accepted: true });
   } catch (err) { next(err); }
 });
@@ -575,6 +727,88 @@ stagesRouter.post('/images/scenes/:sceneId/select', validate(SelectVersionSchema
     await project.save();
 
     res.json({ selected: filename });
+  } catch (err) { next(err); }
+});
+
+// ─── POST /stages/videos/scenes/:sceneId/upload (direct manual upload) ───────
+
+const VideoUploadSchema = z.object({
+  videoBase64: z.string().min(1),
+  mimeType: z.string().min(1),
+  durationSeconds: z.number().optional(),
+});
+
+stagesRouter.post('/videos/scenes/:sceneId/upload', validate(VideoUploadSchema), async (req, res, next) => {
+  try {
+    const projectId = (req.params as Record<string, string>)['id'];
+    const sceneId = parseInt(req.params.sceneId as string, 10);
+    const { videoBase64, mimeType, durationSeconds } = req.body as { videoBase64: string; mimeType: string; durationSeconds?: number };
+
+    const project = await ProjectModel.findById(projectId);
+    if (!project) { res.status(404).json({ error: 'Project not found' }); return; }
+
+    const ext = mimeType.includes('webm') ? 'webm' : mimeType.includes('quicktime') ? 'mov' : 'mp4';
+    const existingVersions = (project.stages.videos.sceneVersions ?? {}) as Record<string, string[]>;
+    const versionNumber = (existingVersions[String(sceneId)] ?? []).length + 1;
+    const filename = `scene_${sceneId}_upload_v${versionNumber}.${ext}`;
+    const videoDir = path.join(env.TEMP_DIR, projectId);
+    ensureDir(videoDir);
+    const videoPath = path.join(videoDir, filename);
+    fs.writeFileSync(videoPath, Buffer.from(videoBase64, 'base64'));
+    const previewUrl = `/api/files/${projectId}/${filename}`;
+
+    // Upsert result[]
+    const videoResults = (project.stages.videos.result as Array<{ sceneId: number; videoPath: string; filename: string; previewUrl: string; durationSeconds?: number; costUSD: number }> | undefined) ?? [];
+    const idx = videoResults.findIndex(r => r.sceneId === sceneId);
+    const entry = { sceneId, videoPath, filename, previewUrl, durationSeconds: durationSeconds ?? 0, costUSD: 0 };
+    if (idx >= 0) { videoResults[idx] = entry; } else { videoResults.push(entry); }
+
+    const newVersions = { ...existingVersions, [String(sceneId)]: [...(existingVersions[String(sceneId)] ?? []), filename] };
+    const previewUrls = (project.stages.videos.reviewData?.previewUrls ?? []) as string[];
+    const urlIdx = previewUrls.findIndex(u => u.includes(`scene_${sceneId}_`));
+    if (urlIdx >= 0) { previewUrls[urlIdx] = previewUrl; } else { previewUrls.push(previewUrl); }
+
+    // Track in stageConfig.manualVideos so generate can skip this scene
+    const stageConfig = (project.stages.videos.stageConfig ?? {}) as Record<string, unknown>;
+    const manualVideos = { ...((stageConfig.manualVideos ?? {}) as Record<string, string>), [String(sceneId)]: filename };
+
+    project.stages.videos.result = videoResults;
+    project.stages.videos.sceneVersions = newVersions;
+    project.stages.videos.reviewData = { previewUrls };
+    project.stages.videos.stageConfig = { ...stageConfig, manualVideos };
+    // If stage was prompt_ready, advance to review so video shows up
+    if (project.stages.videos.status === 'prompt_ready' || project.stages.videos.status === 'failed') {
+      project.stages.videos.status = 'review';
+    }
+    project.markModified('stages.videos.result');
+    project.markModified('stages.videos.sceneVersions');
+    project.markModified('stages.videos.reviewData');
+    project.markModified('stages.videos.stageConfig');
+    await project.save();
+
+    res.json({ filename, previewUrl });
+  } catch (err) { next(err); }
+});
+
+// ─── DELETE /stages/videos/scenes/:sceneId/upload ────────────────────────────
+
+stagesRouter.delete('/videos/scenes/:sceneId/upload', async (req, res, next) => {
+  try {
+    const projectId = (req.params as Record<string, string>)['id'];
+    const sceneId = parseInt(req.params.sceneId as string, 10);
+
+    const project = await ProjectModel.findById(projectId);
+    if (!project) { res.status(404).json({ error: 'Project not found' }); return; }
+
+    const stageConfig = (project.stages.videos.stageConfig ?? {}) as Record<string, unknown>;
+    const manualVideos = { ...((stageConfig.manualVideos ?? {}) as Record<string, string>) };
+    delete manualVideos[String(sceneId)];
+
+    project.stages.videos.stageConfig = { ...stageConfig, manualVideos };
+    project.markModified('stages.videos.stageConfig');
+    await project.save();
+
+    res.json({ removed: true });
   } catch (err) { next(err); }
 });
 
@@ -657,6 +891,115 @@ stagesRouter.post('/:stage/select', validateStage, validate(SelectVersionSchema)
     res.json({ selected: filename });
   } catch (err) { next(err); }
 });
+// ─── PATCH /stages/voiceover/settings ────────────────────────────────────────
+
+const VoiceoverSettingsSchema = z.object({
+  voice: z.string().max(100).optional(),
+  directorNotes: z.object({
+    style:  z.string().max(500),
+    pacing: z.string().max(500),
+    accent: z.string().max(500),
+  }).optional(),
+  sceneNarrations: z.record(z.string(), z.string().max(2000)).optional(),
+});
+
+stagesRouter.patch('/voiceover/settings', validate(VoiceoverSettingsSchema), async (req, res, next) => {
+  try {
+    const projectId = (req.params as Record<string, string>)['id'];
+    const project = await ProjectModel.findById(projectId);
+    if (!project) { res.status(404).json({ error: 'Project not found' }); return; }
+
+    const existing = (project.stages.voiceover.stageConfig ?? {}) as VoiceoverStageConfig;
+    const updated: VoiceoverStageConfig = { ...existing, ...req.body };
+
+    await ProjectModel.findByIdAndUpdate(projectId, {
+      'stages.voiceover.stageConfig': updated,
+    });
+
+    res.json({ saved: true, stageConfig: updated });
+  } catch (err) { next(err); }
+});
+
+// ─── PATCH /stages/assembly/settings ─────────────────────────────────────────
+
+const AssemblySettingsSchema = z.object({
+  voiceVolume:   z.number().min(0).max(1).optional(),
+  musicVolume:   z.number().min(0).max(1).optional(),
+  fadeInSeconds: z.number().min(0).max(5).optional(),
+  fadeOutSeconds: z.number().min(0).max(5).optional(),
+  outputQuality: z.enum(['standard', 'high']).optional(),
+});
+
+stagesRouter.patch('/assembly/settings', validate(AssemblySettingsSchema), async (req, res, next) => {
+  try {
+    const projectId = (req.params as Record<string, string>)['id'];
+    const project = await ProjectModel.findById(projectId);
+    if (!project) { res.status(404).json({ error: 'Project not found' }); return; }
+
+    const existing = (project.stages.assembly.stageConfig ?? {}) as AssemblyStageConfig;
+    const updated: AssemblyStageConfig = { ...existing, ...req.body };
+
+    await ProjectModel.findByIdAndUpdate(projectId, {
+      'stages.assembly.stageConfig': updated,
+    });
+
+    res.json({ saved: true, stageConfig: updated });
+  } catch (err) { next(err); }
+});
+
+// ─── POST /stages/voiceover/auto-tags ────────────────────────────────────────
+
+stagesRouter.post('/voiceover/auto-tags', async (req, res, next) => {
+  try {
+    const projectId = (req.params as Record<string, string>)['id'];
+    const save = String(req.query['save']) === 'true';
+
+    const project = await ProjectModel.findById(projectId);
+    if (!project) { res.status(404).json({ error: 'Project not found' }); return; }
+
+    const storyboard = project.stages.storyboard.result as Storyboard | undefined;
+    if (!storyboard) { res.status(400).json({ error: 'Storyboard not approved yet' }); return; }
+
+    const stageConfig = (project.stages.voiceover.stageConfig ?? {}) as VoiceoverStageConfig;
+
+    // Build scenes list: use any existing overrides as the base text for enrichment
+    const scenes = storyboard.scenes.map(s => ({
+      sceneId: s.id,
+      original: stageConfig.sceneNarrations?.[String(s.id)] ?? s.narration,
+    }));
+
+    // Auto-enrich each narration with audio tags using a text model
+    const { ai } = await import('../services/gemini.service.js');
+    const enriched: Array<{ sceneId: number; original: string; enhanced: string }> = [];
+
+    for (const scene of scenes) {
+      const prompt =
+        `You are a voice director. Add expressive audio tags (e.g. [excitedly], [whispering], [pause], [laughs]) ` +
+        `to this narration to make it more engaging. Return ONLY the enhanced narration with tags, nothing else.\n\n` +
+        `NARRATION:\n${scene.original}`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: [{ parts: [{ text: prompt }] }],
+      });
+
+      const enhanced = response.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? scene.original;
+      enriched.push({ sceneId: scene.sceneId, original: scene.original, enhanced });
+    }
+
+    if (save) {
+      const sceneNarrations: Record<string, string> = {};
+      for (const e of enriched) sceneNarrations[String(e.sceneId)] = e.enhanced;
+      const updatedConfig: VoiceoverStageConfig = { ...stageConfig, sceneNarrations };
+      await ProjectModel.findByIdAndUpdate(projectId, {
+        'stages.voiceover.stageConfig': updatedConfig,
+      });
+    }
+
+    res.json({ scenes: enriched });
+  } catch (err) { next(err); }
+});
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function getNextStage(current: StageKey): StageKey | null {

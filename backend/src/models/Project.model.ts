@@ -47,6 +47,7 @@ const StageDockSchema = new Schema<StageDoc>(
     completedAt: Date,
     referenceImages: { type: Schema.Types.Mixed, default: {} },
     sceneVersions:   { type: Schema.Types.Mixed, default: {} },
+    stageConfig:     { type: Schema.Types.Mixed, default: {} },
   },
   { _id: false }
 );
@@ -89,7 +90,7 @@ const ProjectSchema = new Schema<ProjectDocument>(
       duration: { type: String, enum: ['30s', '60s', '3min'], required: true },
       style: { type: String, enum: ['cinematic', 'educational', 'promotional', 'documentary'], required: true },
       language: { type: String, enum: ['en', 'th', 'ja', 'zh', 'ko'], required: true },
-      voice: { type: String, enum: ['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede'], required: true },
+      voice: { type: String, required: true },
       includeMusic: { type: Boolean, required: true },
     },
     stages: {

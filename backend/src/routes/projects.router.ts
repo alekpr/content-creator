@@ -69,7 +69,7 @@ projectsRouter.get('/', async (_req, res, next) => {
   try {
     const projects = await ProjectModel.find({})
       .sort({ createdAt: -1 })
-      .select('title status input costUSD createdAt updatedAt');
+      .select('title status input costUSD estimatedCostUSD createdAt updatedAt');
 
     res.json(projects);
   } catch (err) {

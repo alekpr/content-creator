@@ -7,7 +7,7 @@ const SOCKET_URL = import.meta.env.VITE_API_URL ?? '';
 
 export function useSocket(projectId: string | undefined, onRefresh?: () => void) {
   const socketRef = useRef<Socket | null>(null);
-  const { updateStageStatus, updateCost, setConnected } = useProjectStore();
+  const { updateStageStatus, updateStageProgress, updateCost, setConnected } = useProjectStore();
   const reconnectAttemptsRef = useRef(0);
   const onRefreshRef = useRef(onRefresh);
   onRefreshRef.current = onRefresh;
@@ -59,7 +59,10 @@ export function useSocket(projectId: string | undefined, onRefresh?: () => void)
       if (event.projectId !== projectId) return;
       onRefreshRef.current?.();
     });
-    socket.on('stage:progress', (_event: StageProgressEvent) => {});
+    socket.on('stage:progress', (event: StageProgressEvent) => {
+      if (event.projectId !== projectId) return;
+      updateStageProgress(event.stageKey, event.message, event.percent ?? 0);
+    });
     socket.on('project:complete', (event: ProjectCompleteEvent) => {
       if (event.projectId !== projectId) return;
       onRefreshRef.current?.();

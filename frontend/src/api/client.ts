@@ -55,11 +55,45 @@ export const api = {
   reopenStage: (projectId: string, stage: string) =>
     request(`/api/projects/${projectId}/stages/${stage}/reopen`, { method: 'POST' }),
 
-  regenerateSceneImage: (projectId: string, sceneId: number, prompt: string) =>
-    request(`/api/projects/${projectId}/stages/images/scenes/${sceneId}/regenerate`, { method: 'POST', body: JSON.stringify({ prompt }) }),
+  // Direct manual upload — saves image to result without AI generation
+  uploadSceneImageDirect: (projectId: string, sceneId: number, imageBase64: string, mimeType: string) =>
+    request(`/api/projects/${projectId}/stages/images/scenes/${sceneId}/upload`, {
+      method: 'POST',
+      body: JSON.stringify({ imageBase64, mimeType }),
+    }) as Promise<{ filename: string; previewUrl: string }>,
 
-  regenerateSceneVideo: (projectId: string, sceneId: number, prompt?: string) =>
-    request(`/api/projects/${projectId}/stages/videos/scenes/${sceneId}/regenerate`, { method: 'POST', body: JSON.stringify({ prompt }) }),
+  removeSceneImageDirect: (projectId: string, sceneId: number) =>
+    request(`/api/projects/${projectId}/stages/images/scenes/${sceneId}/upload`, { method: 'DELETE' }),
+
+  // Direct manual video upload — saves video to result without AI generation
+  uploadSceneVideoDirect: (projectId: string, sceneId: number, videoBase64: string, mimeType: string, durationSeconds?: number) =>
+    request(`/api/projects/${projectId}/stages/videos/scenes/${sceneId}/upload`, {
+      method: 'POST',
+      body: JSON.stringify({ videoBase64, mimeType, durationSeconds }),
+    }) as Promise<{ filename: string; previewUrl: string }>,
+
+  removeSceneVideoDirect: (projectId: string, sceneId: number) =>
+    request(`/api/projects/${projectId}/stages/videos/scenes/${sceneId}/upload`, { method: 'DELETE' }),
+
+  regenerateSceneImage: (
+    projectId: string,
+    sceneId: number,
+    opts: { prompt?: string; additionalPrompt?: string; model?: string; refineFromCurrent?: boolean }
+  ) =>
+    request(`/api/projects/${projectId}/stages/images/scenes/${sceneId}/regenerate`, {
+      method: 'POST',
+      body: JSON.stringify(opts),
+    }),
+
+  regenerateSceneVideo: (
+    projectId: string,
+    sceneId: number,
+    opts: { prompt?: string; additionalPrompt?: string; model?: string }
+  ) =>
+    request(`/api/projects/${projectId}/stages/videos/scenes/${sceneId}/regenerate`, {
+      method: 'POST',
+      body: JSON.stringify(opts),
+    }),
 
   updateScene: (projectId: string, sceneId: number, data: object) =>
     request(`/api/projects/${projectId}/stages/storyboard/scenes/${sceneId}`, { method: 'PATCH', body: JSON.stringify(data) }),
@@ -83,4 +117,16 @@ export const api = {
 
   getAttempts: (projectId: string, stage: string) =>
     request(`/api/projects/${projectId}/stages/${stage}/attempts`),
+
+  saveVoiceoverSettings: (projectId: string, settings: object) =>
+    request(`/api/projects/${projectId}/stages/voiceover/settings`, { method: 'PATCH', body: JSON.stringify(settings) }),
+
+  saveAssemblySettings: (projectId: string, settings: object) =>
+    request(`/api/projects/${projectId}/stages/assembly/settings`, { method: 'PATCH', body: JSON.stringify(settings) }),
+
+  autoTagNarrations: (projectId: string, save = false) =>
+    request<{ scenes: Array<{ sceneId: number; original: string; enhanced: string }> }>(
+      `/api/projects/${projectId}/stages/voiceover/auto-tags?save=${save}`,
+      { method: 'POST' }
+    ),
 };

@@ -28,9 +28,15 @@ export type Voice = 'Puck' | 'Charon' | 'Kore' | 'Fenrir' | 'Aoede';
 // ─── Stage Model Config ───────────────────────────────────────────────────────
 
 export type StoryboardModel = 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-2.5-pro';
-export type ImageModel     = 'gemini-2.5-flash-image' | 'gemini-3.1-flash-image-preview';
-export type VideoModel     = 'veo-3.1-lite-generate-preview' | 'veo-3.1-fast-generate-preview' | 'veo-3.1-generate-preview';
-export type VoiceoverModel = 'gemini-2.5-flash-preview-tts' | 'gemini-2.5-pro-preview-tts';
+export type ImageModel     = 'gemini-2.5-flash-image' | 'gemini-3.1-flash-image-preview' | 'mock';
+export type VideoModel     = 'veo-3.1-lite-generate-preview' | 'veo-3.1-fast-generate-preview' | 'veo-3.1-generate-preview' | 'mock';
+export type VoiceoverModel = 'gemini-2.5-flash-preview-tts' | 'gemini-2.5-pro-preview-tts' | 'gemini-3.1-flash-tts-preview';
+export type TtsVoice =
+  | 'Zephyr' | 'Puck' | 'Charon' | 'Kore' | 'Fenrir' | 'Leda' | 'Orus' | 'Aoede'
+  | 'Callirrhoe' | 'Autonoe' | 'Enceladus' | 'Iapetus' | 'Umbriel' | 'Algieba'
+  | 'Despina' | 'Erinome' | 'Algenib' | 'Rasalgethi' | 'Laomedeia' | 'Achernar'
+  | 'Alnilam' | 'Schedar' | 'Gacrux' | 'Pulcherrima' | 'Achird' | 'Zubenelgenubi'
+  | 'Vindemiatrix' | 'Sadachbia' | 'Sadaltager' | 'Sulafat';
 export type MusicModel     = 'lyria-3-clip-preview' | 'lyria-3-pro-preview';
 
 export interface StageModelConfig {
@@ -62,17 +68,20 @@ export const STAGE_MODEL_OPTIONS: Record<keyof StageModelConfig, ModelOption[]> 
     { value: 'gemini-2.5-pro',        label: 'Pro',        description: 'Most thorough' },
   ],
   images: [
-    { value: 'gemini-2.5-flash-image',      label: 'Flash Image',        description: 'Fast image gen · default' },
-    { value: 'gemini-3.1-flash-image-preview', label: 'Flash 3.1 Image', description: 'Latest preview' },
+    { value: 'gemini-2.5-flash-image',         label: 'Flash Image',        description: 'Fast image gen · default' },
+    { value: 'gemini-3.1-flash-image-preview', label: 'Flash 3.1 Image',    description: 'Latest preview' },
+    { value: 'mock',                           label: 'Mock (Test)',         description: 'Blank placeholder · free · no API call' },
   ],
   videos: [
     { value: 'veo-3.1-lite-generate-preview', label: 'Veo Lite', description: 'Fast generation' },
     { value: 'veo-3.1-fast-generate-preview', label: 'Veo Fast', description: 'Balanced · default' },
     { value: 'veo-3.1-generate-preview',      label: 'Veo Full', description: 'Highest quality' },
+    { value: 'mock',                          label: 'Mock (Test)',         description: 'Blank placeholder · free · no API call' },
   ],
   voiceover: [
-    { value: 'gemini-2.5-flash-preview-tts', label: 'Flash TTS', description: 'Fast · default' },
-    { value: 'gemini-2.5-pro-preview-tts',   label: 'Pro TTS',   description: 'Higher fidelity' },
+    { value: 'gemini-2.5-flash-preview-tts', label: 'Flash TTS',      description: 'Fast · default' },
+    { value: 'gemini-2.5-pro-preview-tts',   label: 'Pro TTS',        description: 'Higher fidelity' },
+    { value: 'gemini-3.1-flash-tts-preview', label: 'Flash 3.1 TTS',  description: 'Latest · audio tag support' },
   ],
   music: [
     { value: 'lyria-3-clip-preview', label: 'Lyria Clip', description: 'Short clips · default' },
@@ -143,13 +152,51 @@ export interface VideoGenerationConfig {
   durationSeconds: '4' | '6' | '8';
 }
 
+// ─── TTS Voice Options ──────────────────────────────────────────────────────
+
+export const TTS_VOICES: TtsVoice[] = [
+  'Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Leda', 'Orus', 'Aoede',
+  'Callirrhoe', 'Autonoe', 'Enceladus', 'Iapetus', 'Umbriel', 'Algieba',
+  'Despina', 'Erinome', 'Algenib', 'Rasalgethi', 'Laomedeia', 'Achernar',
+  'Alnilam', 'Schedar', 'Gacrux', 'Pulcherrima', 'Achird', 'Zubenelgenubi',
+  'Vindemiatrix', 'Sadachbia', 'Sadaltager', 'Sulafat',
+];
+
 // ─── Voiceover / Music ────────────────────────────────────────────────────────
+
+export interface VoiceoverSceneConfig {
+  sceneId: number;
+  narration: string;
+  targetDurationSeconds: number;
+}
+
+export interface VoiceoverDirectorNotes {
+  style: string;
+  pacing: string;
+  accent: string;
+}
+
+export interface VoiceoverStageConfig {
+  voice?: string;
+  directorNotes?: VoiceoverDirectorNotes;
+  sceneNarrations?: Record<string, string>;
+}
 
 export interface VoiceoverConfig {
   script: string;
   voice: Voice;
   speed: number;
   language: Language;
+  scenes: VoiceoverSceneConfig[];
+  directorNotes?: VoiceoverDirectorNotes;
+}
+
+export interface VoiceoverSceneTiming {
+  sceneId: number;
+  /** Actual audio duration after TTS — may exceed videoDuration */
+  audioDuration: number;
+  /** Original storyboard scene duration */
+  videoDuration: number;
 }
 
 export interface VoiceoverResult {
@@ -157,6 +204,7 @@ export interface VoiceoverResult {
   filename: string;
   previewUrl: string;
   durationSeconds?: number;
+  sceneTimings?: VoiceoverSceneTiming[];
 }
 
 export interface MusicResult {
@@ -167,6 +215,15 @@ export interface MusicResult {
 }
 
 // ─── Assembly ─────────────────────────────────────────────────────────────────
+
+/** Persisted user settings for the assembly stage (stored in stageConfig). */
+export interface AssemblyStageConfig {
+  voiceVolume?: number;       // 0.0 – 1.0
+  musicVolume?: number;       // 0.0 – 1.0
+  fadeInSeconds?: number;     // audio fade-in duration
+  fadeOutSeconds?: number;    // audio fade-out duration
+  outputQuality?: 'standard' | 'high';
+}
 
 export interface AssemblyConfig {
   voiceVolume: number;
@@ -238,6 +295,8 @@ export interface StageDoc {
   referenceImages?: Record<string, string>;
   /** sceneId (or "0" for single-file stages) → ordered array of versioned filenames */
   sceneVersions?: Record<string, string[]>;
+  /** per-stage user configuration (voiceover: voice, directorNotes, sceneNarrations) */
+  stageConfig?: Record<string, unknown>;
 }
 
 // ─── Project ──────────────────────────────────────────────────────────────────

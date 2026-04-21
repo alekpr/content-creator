@@ -6,10 +6,41 @@ import { createApp } from './app.js';
 import { initSocketIO } from './socket/socket.handler.js';
 import { startVideoWorker } from './jobs/video.worker.js';
 import { cleanupOldTempDirs } from './utils/file.helper.js';
+import { ProjectModel } from './models/Project.model.js';
+
+const STAGE_KEYS = ['storyboard', 'images', 'videos', 'voiceover', 'music', 'assembly'] as const;
+
+/**
+ * On startup, reset any stage stuck in "generating" back to "failed".
+ * This happens when the server was killed mid-generation and MongoDB was never updated.
+ */
+async function recoverStuckGenerations(): Promise<void> {
+  const stageFilters = STAGE_KEYS.map(k => ({ [`stages.${k}.status`]: 'generating' }));
+  const stuckProjects = await ProjectModel.find({ $or: stageFilters });
+
+  if (stuckProjects.length === 0) return;
+
+  console.log(`[Startup] Found ${stuckProjects.length} project(s) with stuck generating stages — resetting to failed`);
+
+  for (const project of stuckProjects) {
+    const updates: Record<string, unknown> = {};
+    for (const key of STAGE_KEYS) {
+      if ((project.stages[key] as { status: string }).status === 'generating') {
+        updates[`stages.${key}.status`] = 'failed';
+        updates[`stages.${key}.error`] = 'Generation interrupted — server was restarted. Please try again.';
+        console.log(`  → project ${project._id}: stage "${key}" reset to failed`);
+      }
+    }
+    await ProjectModel.findByIdAndUpdate(project._id, updates);
+  }
+}
 
 async function main() {
   // Connect to MongoDB
   await connectDB();
+
+  // Reset any stages stuck in "generating" from a previous crashed/killed run
+  await recoverStuckGenerations();
 
   // Build Express app
   const app = createApp();

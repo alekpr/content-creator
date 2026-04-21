@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { Job } from 'bullmq';
 import { videoQueue, videoQueueEvents } from '../jobs/video.queue.js';
 import { ProjectModel } from '../models/Project.model.js';
 import {
@@ -81,61 +82,46 @@ export async function waitForVideoJobs(
   jobIds: string[],
   totalScenes: number
 ): Promise<void> {
+  // Use Job.waitUntilFinished() instead of raw events to avoid a race condition
+  // where fast jobs (e.g. mock model) complete before event listeners are registered.
+  // waitUntilFinished() checks the job state first, then subscribes if still pending.
   let completedCount = 0;
 
-  return new Promise<void>((resolve, reject) => {
-    const onCompleted = ({ jobId }: { jobId: string }) => {
-      if (!jobIds.includes(jobId)) return;
-      completedCount++;
+  await Promise.all(
+    jobIds.map(async (jobId) => {
+      const job = await Job.fromId(videoQueue, jobId);
+      if (!job) throw new Error(`Video job ${jobId} not found in queue`);
 
+      await job.waitUntilFinished(videoQueueEvents);
+
+      completedCount++;
       const percent = Math.round((completedCount / totalScenes) * 100);
       emitStageProgress({ projectId, stageKey: 'videos', message: `${completedCount}/${totalScenes} scenes done`, percent });
+    })
+  );
 
-      if (completedCount >= totalScenes) {
-        cleanup();
-
-        ProjectModel.findByIdAndUpdate(projectId, {
-          'stages.videos.status': 'review',
-        })
-          .then(() => {
-            return ProjectModel.findById(projectId);
-          })
-          .then(project => {
-            const results = (project?.stages.videos.result as Array<{ sceneId: number; videoPath: string; filename?: string }> | undefined) ?? [];
-            const previewUrls = results.map(r =>
-              r.filename
-                ? `/api/files/${projectId}/${r.filename}`
-                : `/api/files/${projectId}/scene_${r.sceneId}.mp4`
-            );
-
-            emitStageResult({
-              projectId,
-              stageKey: 'videos',
-              previewUrls,
-              metadata: { sceneCount: results.length },
-            });
-
-            emitStageStatus({ projectId, stageKey: 'videos', status: 'review', message: 'All videos ready for review' });
-            resolve();
-          })
-          .catch(reject);
-      }
-    };
-
-    const onFailed = ({ jobId, failedReason }: { jobId: string; failedReason: string }) => {
-      if (!jobIds.includes(jobId)) return;
-      cleanup();
-      reject(new Error(`Video job ${jobId} failed: ${failedReason}`));
-    };
-
-    const cleanup = () => {
-      videoQueueEvents.off('completed', onCompleted);
-      videoQueueEvents.off('failed', onFailed);
-    };
-
-    videoQueueEvents.on('completed', onCompleted);
-    videoQueueEvents.on('failed', onFailed);
+  await ProjectModel.findByIdAndUpdate(projectId, {
+    'stages.videos.status': 'review',
   });
+
+  const project = await ProjectModel.findById(projectId);
+  {
+    const results = (project?.stages.videos.result as Array<{ sceneId: number; videoPath: string; filename?: string }> | undefined) ?? [];
+    const previewUrls = results.map(r =>
+      r.filename
+        ? `/api/files/${projectId}/${r.filename}`
+        : `/api/files/${projectId}/scene_${r.sceneId}.mp4`
+    );
+
+    emitStageResult({
+      projectId,
+      stageKey: 'videos',
+      previewUrls,
+      metadata: { sceneCount: results.length },
+    });
+
+    emitStageStatus({ projectId, stageKey: 'videos', status: 'review', message: 'All videos ready for review' });
+  }
 }
 
 // ─── Re-generate Single Scene ─────────────────────────────────────────────────
@@ -143,7 +129,8 @@ export async function waitForVideoJobs(
 export async function regenerateSceneVideo(
   projectId: string,
   sceneId: number,
-  newPrompt?: string
+  newPrompt?: string,
+  videoModel?: string
 ): Promise<void> {
   const project = await ProjectModel.findById(projectId);
   if (!project) throw new Error(`Project ${projectId} not found`);
@@ -178,6 +165,7 @@ export async function regenerateSceneVideo(
       durationSeconds: config.durationSeconds,
       imageBase64: imageBase64,
       attemptNumber,
+      videoModel: videoModel ?? 'veo-3.1-fast-generate-preview',
       versionNumber,
     },
     { jobId: `${projectId}-scene-${sceneId}-${Date.now()}` }

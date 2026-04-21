@@ -1,9 +1,10 @@
 interface GenerateButtonProps {
   loading: boolean;
   onClick: () => void;
+  label?: string;
 }
 
-export function GenerateButton({ loading, onClick }: GenerateButtonProps) {
+export function GenerateButton({ loading, onClick, label = 'Generate' }: GenerateButtonProps) {
   return (
     <button
       onClick={onClick}
@@ -16,7 +17,7 @@ export function GenerateButton({ loading, onClick }: GenerateButtonProps) {
           Generating…
         </>
       ) : (
-        '⚡ Generate'
+        `⚡ ${label}`
       )}
     </button>
   );

@@ -8,6 +8,7 @@ interface ProjectSummary {
   _id: string;
   title: string;
   status: string;
+  costUSD: number;
   estimatedCostUSD: number;
   createdAt: string;
 }
@@ -98,7 +99,7 @@ export default function Home() {
                   <p className="text-xs text-gray-400">{new Date(p.createdAt).toLocaleDateString()}</p>
                 </div>
                 <div className="flex items-center gap-3">
-                  <CostBadge usd={p.estimatedCostUSD} />
+                  <CostBadge usd={p.costUSD > 0 ? p.costUSD : p.estimatedCostUSD} label={p.costUSD > 0 ? 'actual' : 'est.'} />
                   <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
                     p.status === 'completed' ? 'bg-green-100 text-green-700' :
                     p.status === 'in_progress' ? 'bg-blue-100 text-blue-700' :

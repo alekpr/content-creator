@@ -9,6 +9,7 @@ const EnvSchema = z.object({
   FRONTEND_URL: z.string().url('FRONTEND_URL must be a valid URL'),
   TEMP_DIR: z.string().default('./temp'),
   OUTPUT_DIR: z.string().default('./output'),
+  FFMPEG_PATH: z.string().default('/opt/homebrew/bin/ffmpeg'),
 });
 
 function loadEnv() {

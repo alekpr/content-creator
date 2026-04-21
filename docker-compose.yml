@@ -46,6 +46,7 @@ services:
       - MONGODB_URI=mongodb://mongo:27017/ai-video-creator
       - REDIS_URL=redis://redis:6379
       - FRONTEND_URL=http://localhost:5173
+      - FFMPEG_PATH=/usr/bin/ffmpeg
     volumes:
       - ./backend/temp:/app/temp
       - ./backend/output:/app/output

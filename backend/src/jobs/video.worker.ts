@@ -1,5 +1,7 @@
 import { Worker, UnrecoverableError, type Job } from 'bullmq';
+import fs from 'fs';
 import path from 'path';
+import ffmpeg from 'fluent-ffmpeg';
 import { redis, type VideoJobData, type VideoJobResult } from './video.queue.js';
 import { ai } from '../services/gemini.service.js';
 import { ProjectModel } from '../models/Project.model.js';
@@ -9,6 +11,8 @@ import { sleep } from '../utils/sleep.js';
 import { ensureDir } from '../utils/file.helper.js';
 import { estimateVideoCost } from '../utils/cost.calculator.js';
 import { env } from '../config/env.js';
+
+ffmpeg.setFfmpegPath(env.FFMPEG_PATH);
 
 const MAX_POLL_RETRIES = 180;        // 30 min at 10s intervals
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
@@ -21,6 +25,45 @@ async function processVideoJob(job: Job<VideoJobData, VideoJobResult>): Promise<
 
   emitStageProgress({ projectId, stageKey: 'videos', sceneId, message: `Scene ${sceneId}: submitting to Veo...` });
 
+  // ─── Generate video file (real or mock) ──────────────────────────────────────
+  const videoDir = path.join(env.TEMP_DIR, projectId);
+  ensureDir(videoDir);
+  const vFilename = `scene_${sceneId}_v${versionNumber}.mp4`;
+  const videoPath = path.join(videoDir, vFilename);
+  let costUSD: number;
+
+  if (videoModel === 'mock') {
+    // Generate mock video from the scene reference image with a slow Ken Burns zoom effect
+    const [w, h] = aspectRatio === '9:16' ? [720, 1280] : [1280, 720];
+    const dur = parseInt(durationSeconds, 10);
+    const fps = 24;
+    const totalFrames = dur * fps;
+
+    // Write imageBase64 to a temp PNG so ffmpeg can read it
+    const tmpImgPath = path.join(env.TEMP_DIR, projectId, `mock_src_${sceneId}.png`);
+    fs.writeFileSync(tmpImgPath, Buffer.from(imageBase64, 'base64'));
+
+    // Ken Burns: slow zoom-in from 1.0x to 1.06x over the clip duration
+    // zoompan filter: zoom progresses each frame, output size locked to scene dimensions
+    const zoomExpr = `zoom='min(zoom+${(0.06 / totalFrames).toFixed(6)},1.06)'`;
+    const xExpr = `x='iw/2-(iw/zoom/2)'`;
+    const yExpr = `y='ih/2-(ih/zoom/2)'`;
+    const zoompanFilter = `scale=${w * 2}:${h * 2},zoompan=${zoomExpr}:${xExpr}:${yExpr}:d=${totalFrames}:s=${w}x${h}:fps=${fps}`;
+
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg()
+        .input(tmpImgPath)
+        .inputOptions(['-loop 1'])
+        .complexFilter([zoompanFilter])
+        .videoCodec('libx264')
+        .outputOptions(['-pix_fmt yuv420p', `-t ${dur}`, '-an'])
+        .output(videoPath)
+        .on('end', () => { try { fs.unlinkSync(tmpImgPath); } catch {} resolve(); })
+        .on('error', (err: Error) => reject(new Error(`Mock video ffmpeg error: ${err.message}`)))
+        .run();
+    });
+    costUSD = 0;
+  } else {
   // Submit to Veo
   let operation = await ai.models.generateVideos({
     model: videoModel ?? 'veo-3.1-fast-generate-preview',
@@ -79,8 +122,10 @@ async function processVideoJob(job: Job<VideoJobData, VideoJobResult>): Promise<
     downloadPath: videoPath,
   });
 
+  costUSD = estimateVideoCost(Number(durationSeconds));
+  } // end non-mock
+
   const durationMs = Date.now() - startTime;
-  const costUSD = estimateVideoCost(Number(durationSeconds));
 
   // Remove any existing result entry for this sceneId (handles regeneration),
   // then atomically push the new entry + update all related fields.

@@ -9,6 +9,8 @@ import { ReviewVideos } from './ReviewVideos.tsx';
 import { ReviewAudio } from './ReviewAudio.tsx';
 import { ReviewAssembly } from './ReviewAssembly.tsx';
 import { api } from '../../api/client.ts';
+import { ModelPicker } from './ModelPicker.tsx';
+import { SceneReferenceUpload } from './SceneReferenceUpload.tsx';
 
 const STAGE_LABELS: Record<StageKey, string> = {
   storyboard: '1 · Storyboard',
@@ -115,6 +117,21 @@ export function StagePanel({ project, stageKey, stage, onRefresh }: StagePanelPr
             </div>
           )}
 
+          {/* Model picker — shown when about to generate */}
+          {canGenerate && stageKey !== 'assembly' && (
+            <ModelPicker
+              projectId={project._id}
+              stageKey={stageKey}
+              modelConfig={project.modelConfig}
+              onUpdate={onRefresh}
+            />
+          )}
+
+          {/* Reference image upload — images stage only, before generating */}
+          {canGenerate && stageKey === 'images' && (
+            <SceneReferenceUpload project={project} onRefresh={onRefresh} />
+          )}
+
           {/* Prompt editor (only when editable) */}
           {(stage.status === 'prompt_ready' || stage.status === 'failed') && (
             <PromptEditor
@@ -131,8 +148,8 @@ export function StagePanel({ project, stageKey, stage, onRefresh }: StagePanelPr
               {stageKey === 'storyboard' && <ReviewStoryboard project={project} onRefresh={onRefresh} />}
               {stageKey === 'images'     && <ReviewImages project={project} onRefresh={onRefresh} />}
               {stageKey === 'videos'     && <ReviewVideos project={project} onRefresh={onRefresh} />}
-              {stageKey === 'voiceover'  && <ReviewAudio project={project} stageKey="voiceover" />}
-              {stageKey === 'music'      && <ReviewAudio project={project} stageKey="music" />}
+              {stageKey === 'voiceover'  && <ReviewAudio project={project} stageKey="voiceover" onRefresh={onRefresh} />}
+              {stageKey === 'music'      && <ReviewAudio project={project} stageKey="music" onRefresh={onRefresh} />}
               {stageKey === 'assembly'   && <ReviewAssembly project={project} />}
             </>
           ) : null}

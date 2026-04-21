@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Project, SceneVideoResult } from '@content-creator/shared';
 import { api } from '../../api/client.ts';
+import { VersionBadges } from './VersionBadges.tsx';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
@@ -40,7 +41,19 @@ function VideoCard({
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
 
+  const sceneVersions = (project.stages.videos.sceneVersions ?? {}) as Record<string, string[]>;
+  const versions = sceneVersions[String(video.sceneId)] ?? [];
   const videoUrl = `${API_BASE}/api/files/${project._id}/${video.filename}`;
+
+  async function handleSelectVersion(filename: string) {
+    setLoading(true);
+    try {
+      await api.selectSceneVersion(project._id, 'videos', video.sceneId, filename);
+      onRefresh();
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function handleRegenerate() {
     setLoading(true);
@@ -66,13 +79,30 @@ function VideoCard({
       <div className="p-2 space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-xs text-gray-500">Scene {video.sceneId} · {video.durationSeconds}s</span>
-          <button
-            onClick={() => setShowRegenerate(v => !v)}
-            className="text-xs text-blue-600 hover:underline"
-          >
-            {showRegenerate ? 'Cancel' : 'Regenerate'}
-          </button>
+          <div className="flex items-center gap-2">
+            <a
+              href={videoUrl}
+              download={video.filename}
+              className="text-xs text-gray-500 hover:text-gray-700"
+              title="Download clip"
+            >
+              ↓
+            </a>
+            <button
+              onClick={() => setShowRegenerate(v => !v)}
+              className="text-xs text-blue-600 hover:underline"
+            >
+              {showRegenerate ? 'Cancel' : 'Regenerate'}
+            </button>
+          </div>
         </div>
+
+        <VersionBadges
+          versions={versions}
+          selectedFilename={video.filename}
+          loading={loading}
+          onSelect={handleSelectVersion}
+        />
 
         {showRegenerate && (
           <div className="space-y-1">

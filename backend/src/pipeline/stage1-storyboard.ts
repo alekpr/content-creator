@@ -69,7 +69,8 @@ JSON format ที่ต้องการ:
 export async function generateStoryboard(
   projectId: string,
   prompt: string,
-  onProgress: (msg: string) => void
+  onProgress: (msg: string) => void,
+  model = 'gemini-2.5-flash'
 ): Promise<Storyboard> {
   const startTime = Date.now();
 
@@ -83,12 +84,20 @@ export async function generateStoryboard(
   let storyboard: Storyboard;
   let rawText = '';
 
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let totalTokens = 0;
+
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model,
       contents: [{ parts: [{ text: prompt }] }],
       config: { responseMimeType: 'application/json' },
     });
+
+    inputTokens = response.usageMetadata?.promptTokenCount ?? 0;
+    outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
+    totalTokens = response.usageMetadata?.totalTokenCount ?? (inputTokens + outputTokens);
 
     rawText = response.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
     if (!rawText) throw new Error('Empty response from Gemini');
@@ -111,7 +120,7 @@ export async function generateStoryboard(
       stageKey: 'storyboard',
       attemptNumber,
       promptUsed: prompt,
-      modelUsed: 'gemini-2.5-flash',
+      modelUsed: model,
       status: 'failed',
       outputPaths: [],
       error: message,
@@ -143,6 +152,9 @@ export async function generateStoryboard(
         promptUsed: prompt,
         outputPaths: [],
         costUSD,
+        inputTokens,
+        outputTokens,
+        totalTokens,
         durationMs,
         createdAt: new Date(),
       },
@@ -156,11 +168,14 @@ export async function generateStoryboard(
     stageKey: 'storyboard',
     attemptNumber,
     promptUsed: prompt,
-    modelUsed: 'gemini-2.5-flash',
+    modelUsed: model,
     status: 'success',
     outputPaths: [],
     durationMs,
     costUSD,
+    inputTokens,
+    outputTokens,
+    totalTokens,
   });
 
   return storyboard;

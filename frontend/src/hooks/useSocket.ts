@@ -1,14 +1,16 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { useProjectStore } from '../store/projectStore.ts';
-import type { StageStatusEvent, StageProgressEvent, StageResultEvent, StageErrorEvent, ProjectCompleteEvent } from '@content-creator/shared';
+import type { StageStatusEvent, StageProgressEvent, StageResultEvent, StageErrorEvent, ProjectCompleteEvent, CostUpdateEvent } from '@content-creator/shared';
 
 const SOCKET_URL = import.meta.env.VITE_API_URL ?? '';
 
-export function useSocket(projectId: string | undefined) {
+export function useSocket(projectId: string | undefined, onRefresh?: () => void) {
   const socketRef = useRef<Socket | null>(null);
-  const { updateStageStatus, setConnected } = useProjectStore();
+  const { updateStageStatus, updateCost, setConnected } = useProjectStore();
   const reconnectAttemptsRef = useRef(0);
+  const onRefreshRef = useRef(onRefresh);
+  onRefreshRef.current = onRefresh;
 
   const connect = useCallback(() => {
     if (!projectId) return;
@@ -47,11 +49,22 @@ export function useSocket(projectId: string | undefined) {
       updateStageStatus(event.stageKey, 'failed', event.error);
     });
 
+    socket.on('project:cost', (event: CostUpdateEvent) => {
+      if (event.projectId !== projectId) return;
+      updateCost(event.totalCostUSD, event.breakdown);
+    });
+
     // These events trigger a full project re-fetch via callback
-    socket.on('stage:result', (_event: StageResultEvent) => {});
+    socket.on('stage:result', (event: StageResultEvent) => {
+      if (event.projectId !== projectId) return;
+      onRefreshRef.current?.();
+    });
     socket.on('stage:progress', (_event: StageProgressEvent) => {});
-    socket.on('project:complete', (_event: ProjectCompleteEvent) => {});
-  }, [projectId, updateStageStatus, setConnected]);
+    socket.on('project:complete', (event: ProjectCompleteEvent) => {
+      if (event.projectId !== projectId) return;
+      onRefreshRef.current?.();
+    });
+  }, [projectId, updateStageStatus, updateCost, setConnected]);
 
   useEffect(() => {
     connect();

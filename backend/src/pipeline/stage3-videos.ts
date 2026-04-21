@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { videoQueue, videoQueueEvents } from '../jobs/video.queue.js';
 import { ProjectModel } from '../models/Project.model.js';
 import {
@@ -19,7 +20,6 @@ export function buildVideoConfig(
     negativePrompt: scene.negative_prompt,
     aspectRatio: platform === 'tiktok' ? '9:16' : '16:9',
     durationSeconds: String(scene.duration) as '4' | '6' | '8',
-    resolution: '720p',
   };
 }
 
@@ -30,15 +30,26 @@ export async function submitVideoGenerationJobs(
   scenes: StoryboardScene[],
   sceneImages: SceneImageResult[],
   platform: string,
-  attemptNumber: number
+  attemptNumber: number,
+  videoModel = 'veo-3.1-fast-generate-preview'
 ): Promise<string[]> {
   const jobIds: string[] = [];
 
+  const project = await ProjectModel.findById(projectId);
+  const existingVideoVersions = ((project?.stages.videos.sceneVersions ?? {}) as Record<string, string[]>);
+  const completedSceneIds = new Set(
+    ((project?.stages.videos.result ?? []) as Array<{ sceneId: number }>).map(r => r.sceneId)
+  );
+
   for (const scene of scenes) {
+    // Skip scenes that already have a completed result
+    if (completedSceneIds.has(scene.id)) continue;
+
     const image = sceneImages.find(img => img.sceneId === scene.id);
     if (!image?.imageBase64) throw new Error(`No image data for scene ${scene.id}`);
 
     const config = buildVideoConfig(scene, platform);
+    const versionNumber = (existingVideoVersions[String(scene.id)] ?? []).length + 1;
 
     const job = await videoQueue.add(
       `scene-${scene.id}`,
@@ -49,9 +60,10 @@ export async function submitVideoGenerationJobs(
         negativePrompt: config.negativePrompt,
         aspectRatio: config.aspectRatio,
         durationSeconds: config.durationSeconds,
-        resolution: config.resolution,
         imageBase64: image.imageBase64,
         attemptNumber,
+        videoModel,
+        versionNumber,
       },
       { jobId: `${projectId}-scene-${scene.id}-${Date.now()}` }
     );
@@ -89,8 +101,12 @@ export async function waitForVideoJobs(
             return ProjectModel.findById(projectId);
           })
           .then(project => {
-            const results = (project?.stages.videos.result as Array<{ sceneId: number; videoPath: string }> | undefined) ?? [];
-            const previewUrls = results.map(r => `/api/files/${projectId}/scene_${r.sceneId}.mp4`);
+            const results = (project?.stages.videos.result as Array<{ sceneId: number; videoPath: string; filename?: string }> | undefined) ?? [];
+            const previewUrls = results.map(r =>
+              r.filename
+                ? `/api/files/${projectId}/${r.filename}`
+                : `/api/files/${projectId}/scene_${r.sceneId}.mp4`
+            );
 
             emitStageResult({
               projectId,
@@ -141,6 +157,15 @@ export async function regenerateSceneVideo(
 
   const config = buildVideoConfig(scene, project.input.platform);
   const attemptNumber = (project.stages.videos.attempts?.length ?? 0) + 1;
+  const existingVersions = (project.stages.videos.sceneVersions ?? {}) as Record<string, string[]>;
+  const versionNumber = (existingVersions[String(sceneId)] ?? []).length + 1;
+
+  // Read imageBase64 from disk if not cached in DB
+  let imageBase64 = image.imageBase64;
+  if (!imageBase64 && image.imagePath && fs.existsSync(image.imagePath)) {
+    imageBase64 = fs.readFileSync(image.imagePath).toString('base64');
+  }
+  if (!imageBase64) throw new Error(`No image data available for scene ${sceneId} — regenerate images first`);
 
   const job = await videoQueue.add(
     `scene-${sceneId}-regen`,
@@ -151,9 +176,9 @@ export async function regenerateSceneVideo(
       negativePrompt: config.negativePrompt,
       aspectRatio: config.aspectRatio,
       durationSeconds: config.durationSeconds,
-      resolution: config.resolution,
-      imageBase64: image.imageBase64 ?? '',
+      imageBase64: imageBase64,
       attemptNumber,
+      versionNumber,
     },
     { jobId: `${projectId}-scene-${sceneId}-${Date.now()}` }
   );

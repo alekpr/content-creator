@@ -12,7 +12,8 @@ import type { MusicResult } from '@content-creator/shared';
 export async function generateMusic(
   projectId: string,
   musicMood: string,
-  onProgress: (msg: string) => void
+  onProgress: (msg: string) => void,
+  model = 'lyria-3-clip-preview'
 ): Promise<MusicResult> {
   const startTime = Date.now();
 
@@ -20,6 +21,8 @@ export async function generateMusic(
   if (!project) throw new Error(`Project ${projectId} not found`);
 
   const attemptNumber = (project.stages.music.attempts?.length ?? 0) + 1;
+  const existingMusicVersions = ((project.stages.music.sceneVersions ?? {}) as Record<string, string[]>)['0'] ?? [];
+  const versionNumber = existingMusicVersions.length + 1;
 
   onProgress('Generating background music...');
 
@@ -27,7 +30,7 @@ export async function generateMusic(
 
   try {
     const response = await ai.models.generateContent({
-      model: 'lyria-3-clip-preview',
+      model,
       contents: [
         {
           parts: [
@@ -37,9 +40,12 @@ export async function generateMusic(
           ],
         },
       ],
+      config: { responseModalities: ['AUDIO'] },
     });
 
-    audioBase64 = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data ?? '';
+    audioBase64 = response.candidates?.[0]?.content?.parts
+      ?.find(p => p.inlineData?.mimeType?.startsWith('audio/'))
+      ?.inlineData?.data ?? '';
     if (!audioBase64) throw new Error('Empty audio response from Lyria');
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -52,17 +58,22 @@ export async function generateMusic(
 
   const audioDir = path.join(env.TEMP_DIR, projectId);
   ensureDir(audioDir);
-  const musicPath = path.join(audioDir, 'music.mp3');
+  const filename = `music_v${versionNumber}.mp3`;
+  const musicPath = path.join(audioDir, filename);
   fs.writeFileSync(musicPath, Buffer.from(audioBase64, 'base64'));
 
   const durationMs = Date.now() - startTime;
   const costUSD = 0.04;
-  const previewUrl = `/api/files/${projectId}/music.mp3`;
+  const previewUrl = `/api/files/${projectId}/${filename}`;
 
   await ProjectModel.findByIdAndUpdate(projectId, {
     'stages.music.status': 'review',
-    'stages.music.result': { musicPath },
+    'stages.music.result': { musicPath, filename, previewUrl },
     'stages.music.reviewData': { previewUrl },
+    'stages.music.sceneVersions': {
+      ...((project.stages.music.sceneVersions ?? {}) as Record<string, string[]>),
+      '0': [...existingMusicVersions, filename],
+    },
     $push: {
       'stages.music.attempts': {
         attemptNumber,
@@ -81,7 +92,7 @@ export async function generateMusic(
     stageKey: 'music',
     attemptNumber,
     promptUsed: musicMood,
-    modelUsed: 'lyria-3-clip-preview',
+    modelUsed: model,
     status: 'success',
     outputPaths: [musicPath],
     durationMs,
@@ -89,5 +100,5 @@ export async function generateMusic(
   });
 
   onProgress('Music ready');
-  return { musicPath, filename: 'music.mp3', previewUrl };
+  return { musicPath, filename, previewUrl };
 }

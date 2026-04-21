@@ -8,6 +8,10 @@ A **semi-automatic AI video generation platform** that transforms a simple topic
 
 - **6-Stage AI Pipeline** — Storyboard → Images → Videos → Voiceover → Music → Assembly
 - **Human-in-the-Loop** — Review and approve every stage; edit prompts and regenerate at any step
+- **Per-Stage Model Selection** — Choose AI model tier per stage before generating (e.g. Flash Lite / Flash / Pro for storyboard; Veo Lite / Fast / Full for video)
+- **Image Reference Upload** — Upload a reference image per scene for Stage 2; multimodal Gemini call uses it as visual context
+- **Version Tracking & Selection** — Every regeneration creates a new versioned file (v1, v2, …); version badges let you switch which version flows into the next stage without losing any previous result
+- **Download Buttons** — Download any generated asset (image, video clip, audio file) directly from the review panel
 - **Real-time Progress** — WebSocket events stream progress percentage and status updates to the UI
 - **Cost Tracking** — Estimated cost shown before generation; actual cost tracked after each stage
 - **Multi-Platform Support** — YouTube (16:9), TikTok/Instagram (9:16), LinkedIn
@@ -38,11 +42,13 @@ A **semi-automatic AI video generation platform** that transforms a simple topic
 ### AI APIs (Google GenAI)
 | Model | Stage | Purpose |
 |-------|-------|---------|
-| `gemini-2.5-flash` | Stage 1 | Storyboard generation (JSON output) |
-| `gemini-2.5-flash` | Stage 2 | Image generation (PNG per scene) |
-| `veo-3.1-fast-generate-preview` | Stage 3 | Video generation (async + polling) |
-| `gemini-2.5-flash-preview-tts` | Stage 4 | Text-to-speech voiceover |
-| `lyria-3-clip-preview` | Stage 5 | Background music generation |
+| `gemini-2.5-flash-lite` / `flash` / `pro` | Stage 1 | Storyboard generation (JSON output) |
+| `gemini-2.5-flash-lite` / `flash` | Stage 2 | Image generation (PNG per scene), optional multimodal reference |
+| `veo-3.1-lite` / `fast` / `full` `-generate-preview` | Stage 3 | Video generation (async + polling) |
+| `gemini-2.5-flash-preview-tts` / `pro-preview-tts` | Stage 4 | Text-to-speech voiceover |
+| `lyria-3-clip-preview` / `lyria-3-pro-preview` | Stage 5 | Background music generation |
+
+> The default model for each stage is shown in bold. The per-stage model picker in the UI lets you upgrade or downgrade before each generation.
 
 ### Frontend
 | Tool | Purpose |
@@ -98,24 +104,25 @@ A **semi-automatic AI video generation platform** that transforms a simple topic
 - **Cost**: ~$0.001 per generation
 
 ### Stage 2 — Images
-- **Model**: `gemini-2.5-flash` (image generation)  
+- **Model**: `gemini-2.5-flash-lite` or `gemini-2.5-flash` *(selectable)*  
 - One 16:9 PNG generated per scene, all in parallel  
+- **Reference image** — upload a JPEG/PNG/WebP reference per scene; the model uses it as a multimodal input alongside the prompt  
 - **Cost**: ~$0.039 per image
 
 ### Stage 3 — Videos
-- **Model**: `veo-3.1-fast-generate-preview` (async operation)  
+- **Model**: `veo-3.1-lite` / `fast` / `full` `-generate-preview` *(selectable)*  
 - Each scene submitted as a BullMQ job; worker polls until complete  
 - Aspect ratio: 16:9 (YouTube/LinkedIn) or 9:16 (TikTok/Instagram)  
 - **Cost**: ~$0.10 per second of video
 
 ### Stage 4 — Voiceover
-- **Model**: `gemini-2.5-flash-preview-tts`  
+- **Model**: `gemini-2.5-flash-preview-tts` or `gemini-2.5-pro-preview-tts` *(selectable)*  
 - All scene narrations concatenated into a single script → MP3  
 - 5 voice options, adjustable speed  
 - **Cost**: ~$0.001 per generation
 
 ### Stage 5 — Music *(Optional)*
-- **Model**: `lyria-3-clip-preview`  
+- **Model**: `lyria-3-clip-preview` or `lyria-3-pro-preview` *(selectable)*  
 - 30-second loopable background music clip based on mood  
 - **Cost**: ~$0.04 per clip
 
@@ -238,25 +245,51 @@ npm run preview --workspace=frontend # Preview production build
 
 ## 📡 API Reference
 
+### Projects
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/api/projects` | Create new project (returns cost estimate) |
 | `GET` | `/api/projects` | List all projects |
 | `GET` | `/api/projects/:id` | Get project with all stage data |
 | `DELETE` | `/api/projects/:id` | Delete project and temp files |
-| `PATCH` | `/api/projects/:id/stages/:stage` | Update stage (edit prompt / approve / regenerate) |
 | `GET` | `/api/files/:projectId/:filename` | Serve intermediate files (images, clips, audio) |
 | `GET` | `/api/projects/:id/download` | Download final MP4 |
 | `GET` | `/health` | Health check (DB + Redis status) |
+
+### Stage Actions
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/projects/:id/stages/:stage/generate` | Trigger generation for a stage |
+| `POST` | `/api/projects/:id/stages/:stage/approve` | Approve stage and unlock the next |
+| `POST` | `/api/projects/:id/stages/:stage/skip` | Skip an optional stage (e.g. music) |
+| `POST` | `/api/projects/:id/stages/:stage/retry` | Retry a failed stage |
+| `POST` | `/api/projects/:id/stages/:stage/reset` | Reset stage back to pending |
+| `PATCH` | `/api/projects/:id/stages/:stage/prompt` | Edit stage prompt before generating |
+| `PATCH` | `/api/projects/:id/stages/:stage/model` | **[New]** Set the AI model for a stage |
+| `GET` | `/api/projects/:id/stages/:stage/attempts` | List all generation attempts for a stage |
+
+### Scene-Level Operations
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/projects/:id/stages/images/scenes/:sceneId/regenerate` | Regenerate a single scene image |
+| `POST` | `/api/projects/:id/stages/videos/scenes/:sceneId/regenerate` | Regenerate a single scene video |
+| `PATCH` | `/api/projects/:id/stages/storyboard/scenes/:sceneId` | Edit individual storyboard scene fields |
+| `PATCH` | `/api/projects/:id/stages/images/scenes/:sceneId/reference` | **[New]** Upload reference image for a scene |
+| `DELETE` | `/api/projects/:id/stages/images/scenes/:sceneId/reference` | **[New]** Remove reference image for a scene |
+| `POST` | `/api/projects/:id/stages/images/scenes/:sceneId/select` | **[New]** Select a specific version as the active image |
+| `POST` | `/api/projects/:id/stages/videos/scenes/:sceneId/select` | **[New]** Select a specific version as the active video |
+| `POST` | `/api/projects/:id/stages/:stage/select` | **[New]** Select a specific version for voiceover or music |
 
 ### WebSocket Events (Socket.io)
 
 | Event | Payload |
 |-------|---------|
-| `stageProgress` | `{ projectId, stageKey, message, percent }` |
-| `stageStatus` | `{ projectId, stageKey, status }` |
-| `stageError` | `{ projectId, stageKey, error }` |
-| `projectComplete` | `{ projectId, downloadUrl }` |
+| `stage:progress` | `{ projectId, stageKey, message, percent, sceneId? }` |
+| `stage:status` | `{ projectId, stageKey, status, message? }` |
+| `stage:result` | `{ projectId, stageKey, previewUrls, metadata }` |
+| `stage:error` | `{ projectId, stageKey, error }` |
+| `project:cost` | `{ projectId, costUSD, breakdown }` |
+| `project:complete` | `{ projectId, downloadUrl }` |
 
 ---
 
@@ -279,14 +312,52 @@ content-creator/
 ├── frontend/                 # React + Vite UI
 │   └── src/
 │       ├── pages/            # Home + Project pages
-│       ├── components/       # StagePanel per pipeline step
+│       ├── components/
+│       │   └── StagePanel/   # Per-stage review panels
+│       │       ├── ModelPicker.tsx         # Per-stage AI model selector
+│       │       ├── SceneReferenceUpload.tsx # Reference image upload grid
+│       │       ├── VersionBadges.tsx        # v1/v2/… version switcher
+│       │       ├── ReviewImages.tsx
+│       │       ├── ReviewVideos.tsx
+│       │       ├── ReviewAudio.tsx
+│       │       └── ReviewStoryboard.tsx
 │       ├── hooks/            # useProject, useSocket
 │       ├── store/            # Zustand project store
-│       └── api/              # API client
+│       └── api/              # API client (client.ts)
 ├── shared/                   # Shared TypeScript types
+│   └── src/index.ts          # StageDoc, SceneImageResult, StageModelConfig, …
 ├── docs/                     # Architecture documentation
 └── docker-compose.yml
 ```
+
+---
+
+## 🖼️ Per-Stage Model Selection
+
+Before triggering generation, each stage shows a **model picker** dropdown. The selection is saved to the project in MongoDB and used for all subsequent generations of that stage.
+
+```
+Storyboard:  Flash Lite  │  Flash (default)  │  Pro
+Images:      Flash Lite  │  Flash (default)
+Videos:      Veo Lite    │  Veo Fast (default)  │  Veo Full
+Voiceover:   Flash TTS (default)  │  Pro TTS
+Music:       Lyria Clip (default) │  Lyria Pro
+```
+
+---
+
+## 🔁 Version Tracking
+
+Every regeneration saves a **new versioned file** instead of overwriting the previous one:
+
+| Stage | Filename pattern |
+|-------|------------------|
+| Images | `scene_1_ref_v1.png`, `scene_1_ref_v2.png`, … |
+| Videos | `scene_1_v1.mp4`, `scene_1_v2.mp4`, … |
+| Voiceover | `voiceover_v1.mp3`, `voiceover_v2.mp3`, … |
+| Music | `music_v1.mp3`, `music_v2.mp3`, … |
+
+The version history is stored in `stages.<stageKey>.sceneVersions` in MongoDB. In the review panel, **version badges** (v1, v2, …) appear below each asset — clicking one calls the `/select` API endpoint and updates the active pointer used by the next stage.
 
 ---
 

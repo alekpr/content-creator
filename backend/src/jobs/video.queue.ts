@@ -27,9 +27,10 @@ export interface VideoJobData {
   negativePrompt?: string;
   aspectRatio: '16:9' | '9:16';
   durationSeconds: '4' | '6' | '8';
-  resolution: '720p' | '1080p';
   imageBase64: string;
   attemptNumber: number;
+  videoModel?: string;
+  versionNumber: number;
 }
 
 export interface VideoJobResult {

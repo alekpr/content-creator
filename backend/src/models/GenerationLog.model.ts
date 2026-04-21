@@ -13,6 +13,9 @@ export interface GenerationLogDocument extends Document {
   error?: string;
   durationMs: number;
   costUSD: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
   createdAt: Date;
 }
 
@@ -33,6 +36,9 @@ const GenerationLogSchema = new Schema<GenerationLogDocument>(
     error: String,
     durationMs: { type: Number, required: true },
     costUSD: { type: Number, required: true, default: 0 },
+    inputTokens: { type: Number },
+    outputTokens: { type: Number },
+    totalTokens: { type: Number },
   },
   {
     timestamps: { createdAt: true, updatedAt: false },

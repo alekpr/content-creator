@@ -1,4 +1,4 @@
-import { Worker, type Job } from 'bullmq';
+import { Worker, UnrecoverableError, type Job } from 'bullmq';
 import path from 'path';
 import { redis, type VideoJobData, type VideoJobResult } from './video.queue.js';
 import { ai } from '../services/gemini.service.js';
@@ -16,20 +16,19 @@ const BASE_POLL_INTERVAL_MS = 10_000;
 const MAX_POLL_INTERVAL_MS = 60_000;
 
 async function processVideoJob(job: Job<VideoJobData, VideoJobResult>): Promise<VideoJobResult> {
-  const { projectId, sceneId, prompt, negativePrompt, aspectRatio, durationSeconds, resolution, imageBase64, attemptNumber } = job.data;
+  const { projectId, sceneId, prompt, negativePrompt, aspectRatio, durationSeconds, imageBase64, attemptNumber, videoModel, versionNumber } = job.data;
   const startTime = Date.now();
 
   emitStageProgress({ projectId, stageKey: 'videos', sceneId, message: `Scene ${sceneId}: submitting to Veo...` });
 
   // Submit to Veo
   let operation = await ai.models.generateVideos({
-    model: 'veo-3.1-fast-generate-preview',
+    model: videoModel ?? 'veo-3.1-fast-generate-preview',
     prompt,
     image: { imageBytes: imageBase64, mimeType: 'image/png' },
     config: {
       aspectRatio,
       durationSeconds: parseInt(durationSeconds, 10),
-      resolution,
       ...(negativePrompt ? { negativePrompt } : {}),
     },
   });
@@ -72,7 +71,8 @@ async function processVideoJob(job: Job<VideoJobData, VideoJobResult>): Promise<
   // Download video
   const videoDir = path.join(env.TEMP_DIR, projectId);
   ensureDir(videoDir);
-  const videoPath = path.join(videoDir, `scene_${sceneId}.mp4`);
+  const vFilename = `scene_${sceneId}_v${versionNumber}.mp4`;
+  const videoPath = path.join(videoDir, vFilename);
 
   await ai.files.download({
     file: operation.response.generatedVideos[0].video,
@@ -82,39 +82,25 @@ async function processVideoJob(job: Job<VideoJobData, VideoJobResult>): Promise<
   const durationMs = Date.now() - startTime;
   const costUSD = estimateVideoCost(Number(durationSeconds));
 
-  // Update MongoDB — update the specific scene in the result array
-  const project = await ProjectModel.findById(projectId);
-  if (project) {
-    const videoResult = project.stages.videos.result as Array<{ sceneId: number; videoPath: string; durationSeconds: number }> ?? [];
-    const idx = videoResult.findIndex(r => r.sceneId === sceneId);
-    const entry = { sceneId, videoPath, durationSeconds: Number(durationSeconds) };
+  // Remove any existing result entry for this sceneId (handles regeneration),
+  // then atomically push the new entry + update all related fields.
+  await ProjectModel.findByIdAndUpdate(projectId, {
+    $pull: { 'stages.videos.result': { sceneId } },
+  });
 
-    if (idx >= 0) {
-      videoResult[idx] = entry;
-    } else {
-      videoResult.push(entry);
-    }
+  const previewUrl = `/api/files/${projectId}/${vFilename}`;
+  const entry = { sceneId, videoPath, filename: vFilename, previewUrl, durationSeconds: Number(durationSeconds), costUSD };
+  const attemptEntry = { attemptNumber, promptUsed: prompt, outputPaths: [videoPath], costUSD, durationMs, createdAt: new Date() };
 
-    const previewUrl = `/api/files/${projectId}/scene_${sceneId}.mp4`;
-    const existingUrls = (project.stages.videos.reviewData?.previewUrls ?? []) as string[];
-    if (!existingUrls.includes(previewUrl)) existingUrls.push(previewUrl);
-
-    project.stages.videos.result = videoResult;
-    project.stages.videos.reviewData = { previewUrls: existingUrls };
-
-    // Push attempt
-    project.stages.videos.attempts.push({
-      attemptNumber,
-      promptUsed: prompt,
-      outputPaths: [videoPath],
-      costUSD,
-      durationMs,
-      createdAt: new Date(),
-    });
-
-    project.costUSD = (project.costUSD ?? 0) + costUSD;
-    await project.save();
-  }
+  await ProjectModel.findByIdAndUpdate(projectId, {
+    $push: {
+      'stages.videos.result': entry,
+      'stages.videos.attempts': attemptEntry,
+      [`stages.videos.sceneVersions.${sceneId}`]: vFilename,
+    },
+    $addToSet: { 'stages.videos.reviewData.previewUrls': previewUrl },
+    $inc: { costUSD },
+  });
 
   // Write generation log
   await GenerationLogModel.create({
@@ -122,8 +108,8 @@ async function processVideoJob(job: Job<VideoJobData, VideoJobResult>): Promise<
     stageKey: 'videos',
     attemptNumber,
     promptUsed: prompt,
-    modelUsed: 'veo-3.1-fast-generate-preview',
-    configUsed: { aspectRatio, durationSeconds, resolution },
+    modelUsed: videoModel ?? 'veo-3.1-fast-generate-preview',
+    configUsed: { aspectRatio, durationSeconds },
     status: 'success',
     outputPaths: [videoPath],
     durationMs,
@@ -139,10 +125,21 @@ async function processVideoJob(job: Job<VideoJobData, VideoJobResult>): Promise<
 export function startVideoWorker(): Worker<VideoJobData, VideoJobResult> {
   const worker = new Worker<VideoJobData, VideoJobResult>(
     'video-generation',
-    processVideoJob,
+    async (job) => {
+      try {
+        return await processVideoJob(job);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Don't retry on rate limit or permission errors — they won't recover on retry
+        if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('403') || msg.includes('NOT_FOUND')) {
+          throw new UnrecoverableError(msg);
+        }
+        throw err;
+      }
+    },
     {
       connection: redis,
-      concurrency: 3,
+      concurrency: 1,
     }
   );
 

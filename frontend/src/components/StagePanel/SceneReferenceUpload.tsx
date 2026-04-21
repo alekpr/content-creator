@@ -1,0 +1,151 @@
+import { useRef, useState } from 'react';
+import type { Project, Storyboard } from '@content-creator/shared';
+import { api } from '../../api/client.ts';
+
+const API_BASE = import.meta.env.VITE_API_URL ?? '';
+
+interface SceneReferenceUploadProps {
+  project: Project;
+  onRefresh: () => void;
+}
+
+export function SceneReferenceUpload({ project, onRefresh }: SceneReferenceUploadProps) {
+  const storyboard = project.stages.storyboard.result as Storyboard | undefined;
+  if (!storyboard?.scenes?.length) return null;
+
+  const refImages = (project.stages.images.referenceImages ?? {}) as Record<string, string>;
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-medium text-gray-600">
+        Reference Images <span className="font-normal text-gray-400">(optional — Gemini will use these as style/content guide)</span>
+      </p>
+      <div className="grid grid-cols-2 gap-2">
+        {storyboard.scenes.map(scene => (
+          <SceneRefCard
+            key={scene.id}
+            projectId={project._id}
+            sceneId={scene.id}
+            refFilename={refImages[String(scene.id)]}
+            onRefresh={onRefresh}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+interface SceneRefCardProps {
+  projectId: string;
+  sceneId: number;
+  refFilename?: string;
+  onRefresh: () => void;
+}
+
+function SceneRefCard({ projectId, sceneId, refFilename, onRefresh }: SceneRefCardProps) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const refUrl = refFilename ? `${API_BASE}/api/files/${projectId}/${refFilename}` : null;
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 4 * 1024 * 1024) {
+      setError('Image too large (max 4 MB)');
+      return;
+    }
+    setError(null);
+    setLoading(true);
+    try {
+      const base64 = await readFileAsBase64(file);
+      const mimeType = (file.type as 'image/jpeg' | 'image/png' | 'image/webp') || 'image/jpeg';
+      await api.setSceneReferenceImage(projectId, sceneId, base64, mimeType);
+      onRefresh();
+    } catch {
+      setError('Upload failed');
+    } finally {
+      setLoading(false);
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  }
+
+  async function handleRemove() {
+    setLoading(true);
+    setError(null);
+    try {
+      await api.removeSceneReferenceImage(projectId, sceneId);
+      onRefresh();
+    } catch {
+      setError('Remove failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-dashed border-gray-300 overflow-hidden bg-gray-50">
+      {refUrl ? (
+        <div className="relative group">
+          <img
+            src={refUrl}
+            alt={`Scene ${sceneId} reference`}
+            className="w-full aspect-video object-cover"
+          />
+          {/* Overlay on hover */}
+          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100">
+            <button
+              onClick={() => inputRef.current?.click()}
+              disabled={loading}
+              className="rounded bg-white text-gray-800 px-2 py-1 text-xs font-medium hover:bg-gray-100 disabled:opacity-50"
+            >
+              Change
+            </button>
+            <button
+              onClick={handleRemove}
+              disabled={loading}
+              className="rounded bg-red-500 text-white px-2 py-1 text-xs font-medium hover:bg-red-600 disabled:opacity-50"
+            >
+              Remove
+            </button>
+          </div>
+          <span className="absolute bottom-1 left-1 text-[10px] bg-black/60 text-white rounded px-1">
+            Scene {sceneId}
+          </span>
+        </div>
+      ) : (
+        <button
+          onClick={() => inputRef.current?.click()}
+          disabled={loading}
+          className="w-full aspect-video flex flex-col items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50"
+        >
+          <span className="text-2xl leading-none">{loading ? '…' : '+'}</span>
+          <span className="text-xs mt-1">Scene {sceneId} reference</span>
+        </button>
+      )}
+      {error && <p className="text-[10px] text-red-500 px-2 py-0.5">{error}</p>}
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        className="hidden"
+        onChange={handleFileChange}
+      />
+    </div>
+  );
+}
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // Strip the data URL prefix  e.g. "data:image/jpeg;base64,..."
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}

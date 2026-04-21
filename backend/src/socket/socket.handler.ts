@@ -7,6 +7,7 @@ import type {
   StageResultEvent,
   StageErrorEvent,
   ProjectCompleteEvent,
+  CostUpdateEvent,
 } from '@content-creator/shared';
 
 let io: SocketServer | null = null;
@@ -58,4 +59,8 @@ export function emitStageError(event: StageErrorEvent): void {
 
 export function emitProjectComplete(event: ProjectCompleteEvent): void {
   getIO().to(`project:${event.projectId}`).emit('project:complete', event);
+}
+
+export function emitCostUpdate(event: CostUpdateEvent): void {
+  getIO().to(`project:${event.projectId}`).emit('project:cost', event);
 }

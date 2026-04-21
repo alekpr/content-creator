@@ -32,6 +32,7 @@ projectsRouter.post('/', validate(CreateProjectSchema), async (req, res, next) =
     const project = await ProjectModel.create({
       title: input.topic.slice(0, 100),
       input,
+      estimatedCostUSD,
       stages: {
         storyboard: { status: 'prompt_ready', prompt: storyboardPrompt, attempts: [] },
         images:     { status: 'pending', prompt: '', attempts: [] },

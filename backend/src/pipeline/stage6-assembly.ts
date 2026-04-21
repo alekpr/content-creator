@@ -1,8 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 import ffmpeg from 'fluent-ffmpeg';
+
+// Set system ffmpeg path for fluent-ffmpeg
+ffmpeg.setFfmpegPath('/opt/homebrew/bin/ffmpeg');
 import { ProjectModel } from '../models/Project.model.js';
-import { cleanupProjectTemp } from '../utils/file.helper.js';
 import { emitProjectComplete } from '../socket/socket.handler.js';
 import { env } from '../config/env.js';
 import type { AssemblyConfig, AssemblyResult } from '@content-creator/shared';
@@ -93,6 +95,12 @@ export async function assembleVideo(
     status: 'completed',
     'stages.assembly.status': 'approved',
     'stages.assembly.completedAt': new Date(),
+    'stages.assembly.result': {
+      outputPath,
+      fileUrl,
+      durationSeconds: 0,
+      fileSizeBytes: stats.size,
+    },
     output: {
       filePath: outputPath,
       fileUrl,
@@ -101,8 +109,9 @@ export async function assembleVideo(
     completedAt: new Date(),
   });
 
-  // Cleanup temp files
-  cleanupProjectTemp(projectId);
+  // Remove only the intermediate concat files, keep all source assets for review
+  if (fs.existsSync(concatPath)) fs.unlinkSync(concatPath);
+  if (fs.existsSync(concatOutput)) fs.unlinkSync(concatOutput);
 
   emitProjectComplete({ projectId, downloadUrl: fileUrl });
 

@@ -19,32 +19,59 @@ export function buildImagePrompts(storyboard: Storyboard): SceneImagePrompt[] {
 
 // ─── Single Image ─────────────────────────────────────────────────────────────
 
+interface SingleImageGen {
+  result: SceneImageResult;
+  totalTokens: number;
+}
+
 async function generateSingleImage(
   projectId: string,
   sceneId: number,
-  prompt: string
-): Promise<SceneImageResult> {
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: [{ parts: [{ text: prompt }] }],
-    config: { responseModalities: ['IMAGE'] },
-  });
-
-  const inlineData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData;
-  if (!inlineData?.data) throw new Error(`No image data returned for scene ${sceneId}`);
-
+  prompt: string,
+  model = 'gemini-2.5-flash-image',
+  referenceImageBase64?: string,
+  referenceMimeType = 'image/jpeg',
+  versionNumber = 1
+): Promise<SingleImageGen> {
   const imageDir = path.join(env.TEMP_DIR, projectId);
   ensureDir(imageDir);
+  const filename = `scene_${sceneId}_ref_v${versionNumber}.png`;
+  const imagePath = path.join(imageDir, filename);
 
-  const imagePath = path.join(imageDir, `scene_${sceneId}_ref.png`);
-  fs.writeFileSync(imagePath, Buffer.from(inlineData.data, 'base64'));
+  let imageBase64: string;
+  let totalTokens = 0;
+
+  // All Gemini image models use generateContent() with responseModalities: ['IMAGE']
+  const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [];
+  if (referenceImageBase64) {
+    parts.push({ inlineData: { mimeType: referenceMimeType, data: referenceImageBase64 } });
+  }
+  parts.push({ text: `Generate a high-quality image for this scene. ${prompt}` });
+
+  const response = await ai.models.generateContent({
+    model,
+    contents: [{ parts }],
+    config: { responseModalities: ['IMAGE', 'TEXT'] },
+  });
+
+  // Find the image part (may not be the first part when TEXT is also in modalities)
+  const imagePart = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.mimeType?.startsWith('image/'));
+  const inlineData = imagePart?.inlineData;
+  if (!inlineData?.data) throw new Error(`No image data returned for scene ${sceneId}`);
+  imageBase64 = inlineData.data;
+  totalTokens = response.usageMetadata?.totalTokenCount ?? 0;
+
+  fs.writeFileSync(imagePath, Buffer.from(imageBase64, 'base64'));
 
   return {
-    sceneId,
-    imagePath,
-    filename: `scene_${sceneId}_ref.png`,
-    previewUrl: `/api/files/${projectId}/scene_${sceneId}_ref.png`,
-    imageBase64: inlineData.data,
+    result: {
+      sceneId,
+      imagePath,
+      filename,
+      previewUrl: `/api/files/${projectId}/${filename}`,
+      imageBase64,
+    },
+    totalTokens,
   };
 }
 
@@ -53,26 +80,48 @@ async function generateSingleImage(
 export async function generateImages(
   projectId: string,
   scenePrompts: SceneImagePrompt[],
-  onProgress: (msg: string) => void
+  onProgress: (msg: string) => void,
+  model = 'gemini-2.5-flash-image',
+  referenceImages: Record<string, string> = {}
 ): Promise<SceneImageResult[]> {
   const project = await ProjectModel.findById(projectId);
   if (!project) throw new Error(`Project ${projectId} not found`);
 
   const attemptNumber = (project.stages.images.attempts?.length ?? 0) + 1;
+  const existingVersions = (project.stages.images.sceneVersions ?? {}) as Record<string, string[]>;
+  const versionMap: Record<string, number> = {};
+  for (const sp of scenePrompts) {
+    versionMap[String(sp.sceneId)] = (existingVersions[String(sp.sceneId)] ?? []).length + 1;
+  }
   const startTime = Date.now();
 
   onProgress(`Generating ${scenePrompts.length} images in parallel...`);
 
   const settlements = await Promise.allSettled(
-    scenePrompts.map(sp => generateSingleImage(projectId, sp.sceneId, sp.prompt))
+    scenePrompts.map(sp => {
+      const refFilename = referenceImages[String(sp.sceneId)];
+      let refBase64: string | undefined;
+      let refMime = 'image/jpeg';
+      if (refFilename) {
+        const refPath = path.join(env.TEMP_DIR, projectId, refFilename);
+        if (fs.existsSync(refPath)) {
+          refBase64 = fs.readFileSync(refPath).toString('base64');
+          refMime = refFilename.endsWith('.png') ? 'image/png' : refFilename.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+        }
+      }
+      const versionNumber = versionMap[String(sp.sceneId)] ?? 1;
+      return generateSingleImage(projectId, sp.sceneId, sp.prompt, model, refBase64, refMime, versionNumber);
+    })
   );
 
   const results: SceneImageResult[] = [];
   const errors: string[] = [];
+  let totalTokens = 0;
 
   for (const [i, settled] of settlements.entries()) {
     if (settled.status === 'fulfilled') {
-      results.push(settled.value);
+      results.push(settled.value.result);
+      totalTokens += settled.value.totalTokens;
     } else {
       errors.push(`Scene ${scenePrompts[i]?.sceneId}: ${settled.reason}`);
     }
@@ -90,17 +139,24 @@ export async function generateImages(
   const durationMs = Date.now() - startTime;
   const costUSD = results.length * 0.039;
 
+  const newVersions: Record<string, string[]> = { ...existingVersions };
+  for (const r of results) {
+    newVersions[String(r.sceneId)] = [...(newVersions[String(r.sceneId)] ?? []), r.filename];
+  }
+
   // Update MongoDB
   await ProjectModel.findByIdAndUpdate(projectId, {
     'stages.images.status': 'review',
-    'stages.images.result': results.map(r => ({ sceneId: r.sceneId, imagePath: r.imagePath })),
+    'stages.images.result': results.map(r => ({ sceneId: r.sceneId, imagePath: r.imagePath, filename: r.filename, previewUrl: r.previewUrl })),
     'stages.images.reviewData': { previewUrls: results.map(r => r.previewUrl) },
+    'stages.images.sceneVersions': newVersions,
     $push: {
       'stages.images.attempts': {
         attemptNumber,
         promptUsed: scenePrompts,
         outputPaths: results.map(r => r.imagePath),
         costUSD,
+        totalTokens,
         durationMs,
         createdAt: new Date(),
       },
@@ -113,37 +169,56 @@ export async function generateImages(
     stageKey: 'images',
     attemptNumber,
     promptUsed: scenePrompts,
-    modelUsed: 'gemini-2.5-flash',
+    modelUsed: model,
     configUsed: { responseModalities: ['IMAGE'] },
     status: 'success',
     outputPaths: results.map(r => r.imagePath),
     durationMs,
     costUSD,
+    totalTokens,
   });
 
   onProgress(`All ${results.length} images generated`);
   return results;
 }
 
-// ─── Re-generate Single Scene ─────────────────────────────────────────────────
+// --- Re-generate Single Scene ---
 
 export async function regenerateSceneImage(
   projectId: string,
   sceneId: number,
-  newPrompt: string
+  newPrompt: string,
+  model = 'gemini-2.5-flash-image'
 ): Promise<SceneImageResult> {
-  const result = await generateSingleImage(projectId, sceneId, newPrompt);
+  // Read project for ref images and existing version count
+  const initProject = await ProjectModel.findById(projectId);
+  const refImages = (initProject?.stages.images.referenceImages ?? {}) as Record<string, string>;
+  const initVersions = (initProject?.stages.images.sceneVersions ?? {}) as Record<string, string[]>;
+  const versionNumber = (initVersions[String(sceneId)] ?? []).length + 1;
+  const refFilename = refImages[String(sceneId)];
+  let refBase64: string | undefined;
+  let refMime = 'image/jpeg';
+  if (refFilename) {
+    const refPath = path.join(env.TEMP_DIR, projectId, refFilename);
+    if (fs.existsSync(refPath)) {
+      refBase64 = fs.readFileSync(refPath).toString('base64');
+      refMime = refFilename.endsWith('.png') ? 'image/png' : refFilename.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+    }
+  }
+
+  const gen = await generateSingleImage(projectId, sceneId, newPrompt, model, refBase64, refMime, versionNumber);
+  const result = gen.result;
 
   const project = await ProjectModel.findById(projectId);
   if (!project) throw new Error(`Project ${projectId} not found`);
 
-  const imageResults = (project.stages.images.result as Array<{ sceneId: number; imagePath: string }> | undefined) ?? [];
+  const imageResults = (project.stages.images.result as Array<{ sceneId: number; imagePath: string; filename?: string; previewUrl?: string }> | undefined) ?? [];
   const idx = imageResults.findIndex(r => r.sceneId === sceneId);
 
   if (idx >= 0) {
-    imageResults[idx] = { sceneId, imagePath: result.imagePath };
+    imageResults[idx] = { sceneId, imagePath: result.imagePath, filename: result.filename, previewUrl: result.previewUrl };
   } else {
-    imageResults.push({ sceneId, imagePath: result.imagePath });
+    imageResults.push({ sceneId, imagePath: result.imagePath, filename: result.filename, previewUrl: result.previewUrl });
   }
 
   const previewUrls = (project.stages.images.reviewData?.previewUrls ?? []) as string[];
@@ -154,8 +229,16 @@ export async function regenerateSceneImage(
     previewUrls.push(result.previewUrl);
   }
 
+  const freshVersions = (project.stages.images.sceneVersions ?? {}) as Record<string, string[]>;
+  project.stages.images.sceneVersions = {
+    ...freshVersions,
+    [String(sceneId)]: [...(freshVersions[String(sceneId)] ?? []), result.filename],
+  };
   project.stages.images.result = imageResults;
   project.stages.images.reviewData = { previewUrls };
+  project.markModified('stages.images.sceneVersions');
+  project.markModified('stages.images.result');
+  project.markModified('stages.images.reviewData');
   await project.save();
 
   return result;

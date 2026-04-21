@@ -64,6 +64,23 @@ export const api = {
   updateScene: (projectId: string, sceneId: number, data: object) =>
     request(`/api/projects/${projectId}/stages/storyboard/scenes/${sceneId}`, { method: 'PATCH', body: JSON.stringify(data) }),
 
+  updateStageModel: (projectId: string, stage: string, model: string) =>
+    request(`/api/projects/${projectId}/stages/${stage}/model`, { method: 'PATCH', body: JSON.stringify({ model }) }),
+
+  setSceneReferenceImage: (projectId: string, sceneId: number, imageBase64: string, mimeType: string) =>
+    request<{ url: string }>(`/api/projects/${projectId}/stages/images/scenes/${sceneId}/reference`, {
+      method: 'PATCH', body: JSON.stringify({ imageBase64, mimeType }),
+    }),
+
+  removeSceneReferenceImage: (projectId: string, sceneId: number) =>
+    request<{ removed: boolean }>(`/api/projects/${projectId}/stages/images/scenes/${sceneId}/reference`, { method: 'DELETE' }),
+
+  selectSceneVersion: (projectId: string, stage: 'images' | 'videos', sceneId: number, filename: string) =>
+    request<{ selected: string }>(`/api/projects/${projectId}/stages/${stage}/scenes/${sceneId}/select`, { method: 'POST', body: JSON.stringify({ filename }) }),
+
+  selectStageVersion: (projectId: string, stage: 'voiceover' | 'music', filename: string) =>
+    request<{ selected: string }>(`/api/projects/${projectId}/stages/${stage}/select`, { method: 'POST', body: JSON.stringify({ filename }) }),
+
   getAttempts: (projectId: string, stage: string) =>
     request(`/api/projects/${projectId}/stages/${stage}/attempts`),
 };

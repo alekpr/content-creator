@@ -1,10 +1,11 @@
 import { useParams, useNavigate } from 'react-router-dom';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useProject } from '../hooks/useProject.ts';
 import { useSocket } from '../hooks/useSocket.ts';
 import { useProjectStore } from '../store/projectStore.ts';
 import { StagePanel } from '../components/StagePanel/StagePanel.tsx';
 import { CostBadge } from '../components/CostBadge.tsx';
+import { CostBreakdownModal } from '../components/CostBreakdownModal.tsx';
 import type { StageKey } from '@content-creator/shared';
 
 const STAGE_KEYS: StageKey[] = ['storyboard', 'images', 'videos', 'voiceover', 'music', 'assembly'];
@@ -13,9 +14,10 @@ export default function Project() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { project, refresh } = useProject(id);
-  const { isConnected } = useProjectStore();
+  const { isConnected, costBreakdown } = useProjectStore();
+  const [showCost, setShowCost] = useState(false);
 
-  useSocket(id);
+  useSocket(id, refresh);
 
   // Re-fetch whenever socket reports a stage change
   useEffect(() => {
@@ -32,9 +34,14 @@ export default function Project() {
   }
 
   const totalCost = project.actualCostUSD ?? project.estimatedCostUSD;
+  const activeCostBreakdown = costBreakdown ?? project.costBreakdown;
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {showCost && activeCostBreakdown && (
+        <CostBreakdownModal breakdown={activeCostBreakdown} onClose={() => setShowCost(false)} />
+      )}
+
       {/* Nav */}
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -54,7 +61,17 @@ export default function Project() {
             <span className={`h-2 w-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-gray-300'}`} />
             {isConnected ? 'Live' : 'Offline'}
           </span>
-          <CostBadge usd={totalCost} />
+          <button
+            onClick={() => setShowCost(true)}
+            disabled={!activeCostBreakdown}
+            className="flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-default"
+            title={activeCostBreakdown ? 'View cost breakdown' : 'No breakdown yet'}
+          >
+            <CostBadge usd={totalCost} />
+            {activeCostBreakdown && (
+              <span className="text-xs text-gray-400 hover:text-gray-600">details ↗</span>
+            )}
+          </button>
         </div>
       </header>
 

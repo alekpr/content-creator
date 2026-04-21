@@ -5,6 +5,8 @@ import type {
   ProjectStatus,
   ProjectOutput,
   GenerationAttempt,
+  CostBreakdown,
+  StageModelConfig,
 } from '@content-creator/shared';
 
 // ─── Sub-schemas ──────────────────────────────────────────────────────────────
@@ -15,6 +17,9 @@ const GenerationAttemptSchema = new Schema<GenerationAttempt>(
     promptUsed: { type: Schema.Types.Mixed, required: true },
     outputPaths: [{ type: String }],
     costUSD: { type: Number, required: true, default: 0 },
+    inputTokens: { type: Number },
+    outputTokens: { type: Number },
+    totalTokens: { type: Number },
     durationMs: { type: Number, required: true },
     createdAt: { type: Date, required: true },
   },
@@ -40,6 +45,8 @@ const StageDockSchema = new Schema<StageDoc>(
     error: String,
     startedAt: Date,
     completedAt: Date,
+    referenceImages: { type: Schema.Types.Mixed, default: {} },
+    sceneVersions:   { type: Schema.Types.Mixed, default: {} },
   },
   { _id: false }
 );
@@ -60,6 +67,9 @@ export interface ProjectDocument extends Document {
   };
   output?: ProjectOutput;
   costUSD: number;
+  estimatedCostUSD: number;
+  costBreakdown?: CostBreakdown;
+  modelConfig?: StageModelConfig;
   createdAt: Date;
   updatedAt: Date;
   completedAt?: Date;
@@ -97,6 +107,15 @@ const ProjectSchema = new Schema<ProjectDocument>(
       fileSizeBytes: Number,
     },
     costUSD: { type: Number, default: 0 },
+    estimatedCostUSD: { type: Number, default: 0 },
+    costBreakdown: { type: Schema.Types.Mixed },
+    modelConfig: {
+      storyboard: { type: String, default: 'gemini-2.5-flash' },
+      images:     { type: String, default: 'gemini-2.5-flash' },
+      videos:     { type: String, default: 'veo-3.1-fast-generate-preview' },
+      voiceover:  { type: String, default: 'gemini-2.5-flash-preview-tts' },
+      music:      { type: String, default: 'lyria-3-clip-preview' },
+    },
     completedAt: Date,
   },
   {

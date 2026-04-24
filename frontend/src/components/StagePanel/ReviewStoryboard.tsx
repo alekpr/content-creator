@@ -18,6 +18,69 @@ export function ReviewStoryboard({ project, onRefresh }: ReviewStoryboardProps) 
         <p className="text-sm text-gray-800">{storyboard.title}</p>
       </div>
 
+      {storyboard.imageStyleBrief && (
+        <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 space-y-2">
+          <p className="text-xs font-semibold text-amber-700 uppercase tracking-wide">✦ Image Style Brief (used by Stage 2)</p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className="space-y-1">
+              <p className="text-xs text-gray-700"><span className="font-medium">Universe:</span> {storyboard.imageStyleBrief.visualUniverse}</p>
+              <p className="text-xs text-gray-700"><span className="font-medium">Palette:</span> {storyboard.imageStyleBrief.palette}</p>
+              <p className="text-xs text-gray-700"><span className="font-medium">Lighting:</span> {storyboard.imageStyleBrief.lightingStyle}</p>
+              <p className="text-xs text-gray-700"><span className="font-medium">Composition:</span> {storyboard.imageStyleBrief.compositionStyle}</p>
+              <p className="text-xs text-gray-700"><span className="font-medium">Rendering:</span> {storyboard.imageStyleBrief.renderingStyle}</p>
+            </div>
+            <div className="space-y-1">
+              <p className="text-xs text-gray-700"><span className="font-medium">Characters:</span> {storyboard.imageStyleBrief.characterConsistency}</p>
+              <p className="text-xs text-gray-700"><span className="font-medium">Environment:</span> {storyboard.imageStyleBrief.environmentConsistency}</p>
+              <p className="text-xs text-gray-700"><span className="font-medium">Mood arc:</span> {storyboard.imageStyleBrief.moodProgression}</p>
+              <p className="text-xs text-gray-700"><span className="font-medium">Guardrails:</span> {storyboard.imageStyleBrief.negativeGuardrails}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Director's Brief — auto-generated alongside storyboard */}
+      {storyboard.directorsBrief && (
+        <div className="rounded-lg bg-violet-50 border border-violet-200 p-3 space-y-3">
+          <p className="text-xs font-semibold text-violet-700 uppercase tracking-wide">✦ Director's Brief (auto-generated)</p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-violet-600">🎙 Voiceover</p>
+              {storyboard.directorsBrief.voiceover.narratorPersona && (
+                <p className="text-xs text-gray-700"><span className="font-medium">Persona:</span> {storyboard.directorsBrief.voiceover.narratorPersona}</p>
+              )}
+              {storyboard.directorsBrief.voiceover.emotionalArc && (
+                <p className="text-xs text-gray-700"><span className="font-medium">Arc:</span> {storyboard.directorsBrief.voiceover.emotionalArc}</p>
+              )}
+              {storyboard.directorsBrief.voiceover.deliveryStyle && (
+                <p className="text-xs text-gray-700"><span className="font-medium">Style:</span> {storyboard.directorsBrief.voiceover.deliveryStyle}</p>
+              )}
+              {storyboard.directorsBrief.voiceover.pacing && (
+                <p className="text-xs text-gray-700"><span className="font-medium">Pacing:</span> {storyboard.directorsBrief.voiceover.pacing}</p>
+              )}
+            </div>
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-violet-600">🎵 Music</p>
+              {storyboard.directorsBrief.music.genre && (
+                <p className="text-xs text-gray-700"><span className="font-medium">Genre:</span> {storyboard.directorsBrief.music.genre}</p>
+              )}
+              {storyboard.directorsBrief.music.tempo && (
+                <p className="text-xs text-gray-700"><span className="font-medium">Tempo:</span> {storyboard.directorsBrief.music.tempo}</p>
+              )}
+              {storyboard.directorsBrief.music.instruments && (
+                <p className="text-xs text-gray-700"><span className="font-medium">Instruments:</span> {storyboard.directorsBrief.music.instruments}</p>
+              )}
+              {storyboard.directorsBrief.music.moodArc && (
+                <p className="text-xs text-gray-700"><span className="font-medium">Mood arc:</span> {storyboard.directorsBrief.music.moodArc}</p>
+              )}
+              {storyboard.directorsBrief.music.promptText && (
+                <p className="text-xs text-gray-500 italic pt-1">"{storyboard.directorsBrief.music.promptText}"</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {storyboard.scenes.map((scene, i) => (
         <SceneCard
           key={scene.id}

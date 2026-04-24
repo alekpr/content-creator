@@ -6,9 +6,18 @@ import { ProjectModel } from '../models/Project.model.js';
 import { GenerationLogModel } from '../models/GenerationLog.model.js';
 import { ensureDir } from '../utils/file.helper.js';
 import { env } from '../config/env.js';
-import type { Storyboard, VoiceoverConfig, VoiceoverDirectorNotes, VoiceoverResult, VoiceoverSceneConfig, VoiceoverSceneTiming, VoiceoverStageConfig } from '@content-creator/shared';
+import type { Storyboard, VoiceoverConfig, VoiceoverDirectorNotes, VoiceoverResult, VoiceoverSceneAudio, VoiceoverSceneConfig, VoiceoverSceneTiming, VoiceoverStageConfig } from '@content-creator/shared';
 
 ffmpeg.setFfmpegPath(env.FFMPEG_PATH);
+
+/** Convert DirectorsBriefVoiceover → VoiceoverDirectorNotes for buildTtsPrompt */
+function briefToDirectorNotes(brief: NonNullable<Storyboard['directorsBrief']>['voiceover']): VoiceoverDirectorNotes {
+  return {
+    style: [brief.narratorPersona, brief.emotionalArc, brief.deliveryStyle].filter(Boolean).join('. '),
+    pacing: brief.pacing,
+    accent: brief.accent,
+  };
+}
 
 // ─── Script Builder ───────────────────────────────────────────────────────────
 
@@ -24,13 +33,21 @@ export function buildVoiceoverScript(
     narration: stageConfig?.sceneNarrations?.[String(s.id)] ?? s.narration,
     targetDurationSeconds: s.duration,
   }));
+
+  // Auto-use Director's Brief voiceover notes when user hasn't set custom notes
+  const hasCustomNotes = stageConfig?.directorNotes &&
+    (stageConfig.directorNotes.style || stageConfig.directorNotes.pacing || stageConfig.directorNotes.accent);
+  const autoNotes = !hasCustomNotes && storyboard.directorsBrief
+    ? briefToDirectorNotes(storyboard.directorsBrief.voiceover)
+    : stageConfig?.directorNotes;
+
   return {
     script: scenes.map(s => s.narration).join('\n\n'),
     voice: resolvedVoice as import('@content-creator/shared').Voice,
     speed: 1.0,
     language,
     scenes,
-    directorNotes: stageConfig?.directorNotes,
+    directorNotes: autoNotes,
   };
 }
 
@@ -87,23 +104,8 @@ async function fitAudio(
     return targetSecs;
   }
 
-  const ratio = actualSecs / targetSecs;
-
-  if (ratio <= 1.10) {
-    // ≤10% faster — gentle atempo, speech quality preserved
-    await new Promise<void>((resolve, reject) => {
-      ffmpeg(input)
-        .audioFilters(`atempo=${ratio.toFixed(6)}`)
-        .duration(targetSecs)
-        .output(output)
-        .on('end', () => resolve())
-        .on('error', (err: Error) => reject(new Error(`fitAudio atempo error: ${err.message}`)))
-        .run();
-    });
-    return targetSecs;
-  }
-
-  // ratio > 1.10 — keep natural speech, video will stretch instead
+  // Never speed up speech — always keep natural pace for best clarity.
+  // The assembly stage will extend the video's last frame to match longer audio.
   fs.copyFileSync(input, output);
   return actualSecs;
 }
@@ -157,12 +159,13 @@ function buildTtsPrompt(narration: string, directorNotes?: VoiceoverDirectorNote
   if (!directorNotes || (!directorNotes.style && !directorNotes.pacing && !directorNotes.accent)) {
     return narration;
   }
-  const lines: string[] = ['### DIRECTOR\'S NOTES'];
-  if (directorNotes.style)  lines.push(`Style: ${directorNotes.style}`);
-  if (directorNotes.pacing) lines.push(`Pacing: ${directorNotes.pacing}`);
-  if (directorNotes.accent) lines.push(`Accent: ${directorNotes.accent}`);
-  lines.push('', '### TRANSCRIPT', narration);
-  return lines.join('\n');
+  // Keep notes concise — long instructions confuse TTS and hurt clarity
+  const noteParts: string[] = [];
+  if (directorNotes.style)  noteParts.push(directorNotes.style);
+  if (directorNotes.pacing) noteParts.push(`Pacing: ${directorNotes.pacing}`);
+  if (directorNotes.accent) noteParts.push(`Accent: ${directorNotes.accent}`);
+  const noteBlock = noteParts.join('. ');
+  return `<voice_direction>${noteBlock}</voice_direction>\n\n${narration}`;
 }
 
 async function generateSceneAudio(
@@ -204,7 +207,7 @@ export async function generateVoiceover(
   projectId: string,
   config: VoiceoverConfig,
   onProgress: (msg: string) => void,
-  model = 'gemini-2.5-flash-preview-tts'
+  model = 'gemini-2.5-pro-preview-tts'
 ): Promise<VoiceoverResult> {
   const startTime = Date.now();
 
@@ -221,8 +224,9 @@ export async function generateVoiceover(
 
   let totalTokens = 0;
   const fittedFiles: string[] = [];
-  const intermediateFiles: string[] = [];
+  const intermediateFiles: string[] = [];  // only raw/temp files — fitted files are KEPT
   const sceneTimings: VoiceoverSceneTiming[] = [];
+  const sceneAudio: Record<string, VoiceoverSceneAudio> = {};
 
   try {
     // Generate TTS per scene and fit to target duration
@@ -230,9 +234,10 @@ export async function generateVoiceover(
       const scene = config.scenes[i];
       onProgress(`Generating voiceover for scene ${scene.sceneId} (${i + 1}/${config.scenes.length})...`);
 
-      const rawFile = path.join(audioDir, `voiceover_scene_${scene.sceneId}_v${versionNumber}_raw.wav`);
-      const fittedFile = path.join(audioDir, `voiceover_scene_${scene.sceneId}_v${versionNumber}_fitted.wav`);
-      intermediateFiles.push(rawFile, fittedFile);
+      // Raw file is temporary; fitted "current" file is kept for per-scene regen later
+      const rawFile = path.join(audioDir, `voiceover_scene_${scene.sceneId}_raw.wav`);
+      const fittedFile = path.join(audioDir, `voiceover_scene_${scene.sceneId}_current.wav`);
+      intermediateFiles.push(rawFile);  // only raw is cleaned up
 
       // Call TTS
       const { audioBase64, mimeType, tokens } = await generateSceneAudio(scene.narration, voiceName, model, config.directorNotes);
@@ -255,6 +260,15 @@ export async function generateVoiceover(
         audioDuration: actualAudioDuration,
         videoDuration: scene.targetDurationSeconds,
       });
+
+      // Track per-scene audio for individual preview + regen
+      const sceneFilename = `voiceover_scene_${scene.sceneId}_current.wav`;
+      sceneAudio[String(scene.sceneId)] = {
+        filename: sceneFilename,
+        previewUrl: `/api/files/${projectId}/${sceneFilename}`,
+        durationSeconds: actualAudioDuration,
+        narrationUsed: scene.narration,
+      };
 
       if (actualAudioDuration > scene.targetDurationSeconds + 0.1) {
         onProgress(
@@ -283,7 +297,7 @@ export async function generateVoiceover(
 
     await ProjectModel.findByIdAndUpdate(projectId, {
       'stages.voiceover.status': 'review',
-      'stages.voiceover.result': { audioPath, filename, previewUrl, durationSeconds: totalAudioDuration, sceneTimings },
+      'stages.voiceover.result': { audioPath, filename, previewUrl, durationSeconds: totalAudioDuration, sceneTimings, sceneAudio },
       'stages.voiceover.reviewData': { previewUrl },
       'stages.voiceover.sceneVersions': {
         ...((project.stages.voiceover.sceneVersions ?? {}) as Record<string, string[]>),
@@ -318,7 +332,7 @@ export async function generateVoiceover(
     });
 
     onProgress('Voiceover ready');
-    return { audioPath, filename, previewUrl, durationSeconds: totalAudioDuration, sceneTimings };
+    return { audioPath, filename, previewUrl, durationSeconds: totalAudioDuration, sceneTimings, sceneAudio };
 
   } catch (err) {
     // Clean up any partial intermediate files on failure
@@ -330,6 +344,121 @@ export async function generateVoiceover(
       'stages.voiceover.status': 'failed',
       'stages.voiceover.error': message,
     });
+    throw err;
+  }
+}
+
+// ─── Regenerate a single scene's voiceover ────────────────────────────────────
+
+export async function regenerateSingleSceneVoiceover(
+  projectId: string,
+  sceneId: number,
+  onProgress: (msg: string) => void,
+  model = 'gemini-2.5-pro-preview-tts',
+): Promise<VoiceoverResult> {
+  const project = await ProjectModel.findById(projectId);
+  if (!project) throw new Error(`Project ${projectId} not found`);
+
+  const storyboard = project.stages.storyboard.result as Storyboard | undefined;
+  if (!storyboard) throw new Error('Storyboard not approved yet');
+
+  const stageConfig = (project.stages.voiceover.stageConfig ?? {}) as VoiceoverStageConfig;
+  const voiceName = stageConfig.voice ?? project.input.voice;
+  const narration = stageConfig.sceneNarrations?.[String(sceneId)]
+    ?? storyboard.scenes.find(s => s.id === sceneId)?.narration
+    ?? '';
+  if (!narration) throw new Error(`No narration found for scene ${sceneId}`);
+
+  const targetScene = storyboard.scenes.find(s => s.id === sceneId);
+  if (!targetScene) throw new Error(`Scene ${sceneId} not in storyboard`);
+
+  const audioDir = path.join(env.TEMP_DIR, projectId);
+  ensureDir(audioDir);
+
+  const rawFile = path.join(audioDir, `voiceover_scene_${sceneId}_raw.wav`);
+  const fittedFile = path.join(audioDir, `voiceover_scene_${sceneId}_current.wav`);
+
+  onProgress(`Generating voiceover for scene ${sceneId}...`);
+
+  try {
+    // Generate TTS for this single scene
+    const { audioBase64, mimeType, tokens: _ } = await generateSceneAudio(narration, voiceName, model, stageConfig.directorNotes);
+    const isMp3 = mimeType.includes('mp3');
+    const wavBuffer = isMp3 ? Buffer.from(audioBase64, 'base64') : pcmToWav(audioBase64);
+    fs.writeFileSync(rawFile, wavBuffer);
+
+    const actualAudioDuration = await fitAudio(rawFile, fittedFile, targetScene.duration);
+    if (fs.existsSync(rawFile)) fs.unlinkSync(rawFile);
+
+    onProgress(`Scene ${sceneId} done — re-assembling full voiceover...`);
+
+    // Get existing result + sceneAudio map from DB
+    const existingResult = (project.stages.voiceover.result ?? {}) as VoiceoverResult;
+    const existingSceneAudio = { ...(existingResult.sceneAudio ?? {}) };
+    const existingTimings = [...(existingResult.sceneTimings ?? [])];
+
+    // Update this scene's entry
+    existingSceneAudio[String(sceneId)] = {
+      filename: `voiceover_scene_${sceneId}_current.wav`,
+      previewUrl: `/api/files/${projectId}/voiceover_scene_${sceneId}_current.wav`,
+      durationSeconds: actualAudioDuration,
+      narrationUsed: narration,
+    };
+
+    // Update timing for this scene
+    const timingIdx = existingTimings.findIndex(t => t.sceneId === sceneId);
+    const newTiming: VoiceoverSceneTiming = {
+      sceneId,
+      audioDuration: actualAudioDuration,
+      videoDuration: targetScene.duration,
+    };
+    if (timingIdx >= 0) existingTimings[timingIdx] = newTiming;
+    else existingTimings.push(newTiming);
+
+    // Re-concat all scene current files in storyboard order
+    const allSceneIds = storyboard.scenes.map(s => s.id);
+    const fittedFiles: string[] = [];
+    for (const sid of allSceneIds) {
+      const f = path.join(audioDir, `voiceover_scene_${sid}_current.wav`);
+      if (!fs.existsSync(f)) throw new Error(`Missing current audio for scene ${sid} — please run full voiceover generation first`);
+      fittedFiles.push(f);
+    }
+
+    const existingVersions = ((project.stages.voiceover.sceneVersions ?? {}) as Record<string, string[]>)['0'] ?? [];
+    const versionNumber = existingVersions.length + 1;
+    const filename = `voiceover_v${versionNumber}.wav`;
+    const audioPath = path.join(audioDir, filename);
+    await concatAudioFiles(fittedFiles, audioPath);
+
+    const totalAudioDuration = existingTimings.reduce((s, t) => s + t.audioDuration, 0);
+    const previewUrl = `/api/files/${projectId}/${filename}`;
+
+    await ProjectModel.findByIdAndUpdate(projectId, {
+      'stages.voiceover.status': 'review',
+      'stages.voiceover.result': {
+        audioPath,
+        filename,
+        previewUrl,
+        durationSeconds: totalAudioDuration,
+        sceneTimings: existingTimings,
+        sceneAudio: existingSceneAudio,
+      },
+      'stages.voiceover.reviewData': { previewUrl },
+      'stages.voiceover.sceneVersions': {
+        ...((project.stages.voiceover.sceneVersions ?? {}) as Record<string, string[]>),
+        '0': [...existingVersions, filename],
+      },
+    });
+
+    onProgress('Scene voiceover updated');
+    return {
+      audioPath, filename, previewUrl,
+      durationSeconds: totalAudioDuration,
+      sceneTimings: existingTimings,
+      sceneAudio: existingSceneAudio,
+    };
+  } catch (err) {
+    if (fs.existsSync(rawFile)) fs.unlinkSync(rawFile);
     throw err;
   }
 }

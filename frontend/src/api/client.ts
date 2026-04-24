@@ -95,6 +95,15 @@ export const api = {
       body: JSON.stringify(opts),
     }),
 
+  saveSceneVideoPrompt: (projectId: string, sceneId: number, prompt: string) =>
+    request(`/api/projects/${projectId}/stages/videos/scenes/${sceneId}/prompt`, {
+      method: 'PATCH',
+      body: JSON.stringify({ prompt }),
+    }),
+
+  removeSceneVideoPrompt: (projectId: string, sceneId: number) =>
+    request(`/api/projects/${projectId}/stages/videos/scenes/${sceneId}/prompt`, { method: 'DELETE' }),
+
   updateScene: (projectId: string, sceneId: number, data: object) =>
     request(`/api/projects/${projectId}/stages/storyboard/scenes/${sceneId}`, { method: 'PATCH', body: JSON.stringify(data) }),
 
@@ -106,8 +115,16 @@ export const api = {
       method: 'PATCH', body: JSON.stringify({ imageBase64, mimeType }),
     }),
 
+  setStyleReferenceImage: (projectId: string, imageBase64: string, mimeType: string) =>
+    request<{ url: string }>(`/api/projects/${projectId}/stages/images/style-reference`, {
+      method: 'PATCH', body: JSON.stringify({ imageBase64, mimeType }),
+    }),
+
   removeSceneReferenceImage: (projectId: string, sceneId: number) =>
     request<{ removed: boolean }>(`/api/projects/${projectId}/stages/images/scenes/${sceneId}/reference`, { method: 'DELETE' }),
+
+  removeStyleReferenceImage: (projectId: string) =>
+    request<{ removed: boolean }>(`/api/projects/${projectId}/stages/images/style-reference`, { method: 'DELETE' }),
 
   selectSceneVersion: (projectId: string, stage: 'images' | 'videos', sceneId: number, filename: string) =>
     request<{ selected: string }>(`/api/projects/${projectId}/stages/${stage}/scenes/${sceneId}/select`, { method: 'POST', body: JSON.stringify({ filename }) }),
@@ -124,9 +141,44 @@ export const api = {
   saveAssemblySettings: (projectId: string, settings: object) =>
     request(`/api/projects/${projectId}/stages/assembly/settings`, { method: 'PATCH', body: JSON.stringify(settings) }),
 
-  autoTagNarrations: (projectId: string, save = false) =>
+  autoTagNarrations: (projectId: string, save = false, sceneId?: number) =>
     request<{ scenes: Array<{ sceneId: number; original: string; enhanced: string }> }>(
-      `/api/projects/${projectId}/stages/voiceover/auto-tags?save=${save}`,
+      `/api/projects/${projectId}/stages/voiceover/auto-tags?save=${save}${sceneId !== undefined ? `&sceneId=${sceneId}` : ''}`,
       { method: 'POST' }
     ),
+
+  regenerateVoiceoverScene: (projectId: string, sceneId: number) =>
+    request(`/api/projects/${projectId}/stages/voiceover/scenes/${sceneId}/regenerate`, { method: 'POST' }),
+
+  fitVoiceoverTranscript: (projectId: string, sceneId: number) =>
+    request<{ sceneId: number; original: string; rewritten: string; targetWords: number; durationSecs: number }>(
+      `/api/projects/${projectId}/stages/voiceover/scenes/${sceneId}/fit-transcript`,
+      { method: 'POST' }
+    ),
+
+  saveMusicSettings: (projectId: string, data: { customPrompt?: string }) =>
+    request(`/api/projects/${projectId}/stages/music/settings`, { method: 'PATCH', body: JSON.stringify(data) }),
+
+  // ─── Niches ───────────────────────────────────────────────────────────────
+
+  analyzeNiche: (data: object) =>
+    request('/api/niches/analyze', { method: 'POST', body: JSON.stringify(data) }),
+
+  listNiches: () =>
+    request('/api/niches'),
+
+  getNiche: (id: string) =>
+    request(`/api/niches/${id}`),
+
+  deleteNiche: (id: string) =>
+    request(`/api/niches/${id}`, { method: 'DELETE' }),
+
+  useNiche: (id: string, nicheIndex: number) =>
+    request<{ projectId: string; redirectUrl: string }>(`/api/niches/${id}/use`, {
+      method: 'POST',
+      body: JSON.stringify({ nicheIndex }),
+    }),
+
+  loadMoreNicheIdeas: (id: string, nicheIndex: number) =>
+    request<{ ideas: string[] }>(`/api/niches/${id}/results/${nicheIndex}/more-ideas`, { method: 'POST' }),
 };

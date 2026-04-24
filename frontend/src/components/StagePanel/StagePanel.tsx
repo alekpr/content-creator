@@ -14,6 +14,7 @@ import { SceneReferenceUpload } from './SceneReferenceUpload.tsx';
 import { SceneImageSetupPanel } from './SceneImageSetupPanel.tsx';
 import { SceneVideoSetupPanel } from './SceneVideoSetupPanel.tsx';
 import { VoiceoverSettingsPanel } from './VoiceoverSettingsPanel.tsx';
+import { MusicSettingsPanel } from './MusicSettingsPanel.tsx';
 import { AssemblySettingsPanel } from './AssemblySettingsPanel.tsx';
 import { useProjectStore } from '../../store/projectStore.ts';
 
@@ -39,6 +40,7 @@ export function StagePanel({ project, stageKey, stage, onRefresh }: StagePanelPr
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [musicPromptOverride, setMusicPromptOverride] = useState<string | null>(null);
 
   const progress = useProjectStore(s => s.stageProgress[stageKey]);
 
@@ -47,17 +49,34 @@ export function StagePanel({ project, stageKey, stage, onRefresh }: StagePanelPr
   const canGenerate = stage.status === 'prompt_ready' || stage.status === 'failed';
   const canApprove = stage.status === 'review';
   const canSkip = stageKey === 'music' && (stage.status === 'review' || stage.status === 'prompt_ready');
+
+  // Videos stage: detect when ALL scenes have manual videos → allow skipping AI generation
+  const allScenesManual = (() => {
+    if (stageKey !== 'videos' || !canGenerate) return false;
+    const storyboard = project.stages.storyboard.result as { scenes?: { id: number }[] } | undefined;
+    const sceneCount = storyboard?.scenes?.length ?? 0;
+    if (sceneCount === 0) return false;
+    const manualVideos = ((project.stages.videos.stageConfig as Record<string, unknown> | undefined)?.manualVideos ?? {}) as Record<string, unknown>;
+    return Object.keys(manualVideos).length >= sceneCount;
+  })();
   const canReopen = stage.status === 'approved';
   // Voiceover can be regenerated at any time after first generation (review or approved)
   const canVoiceoverRegenerate = stageKey === 'voiceover' && (stage.status === 'review' || stage.status === 'approved');
+  // Music can be regenerated after first generation (review or approved)
+  const canMusicRegenerate = stageKey === 'music' && (stage.status === 'review' || stage.status === 'approved');
   // Assembly can be regenerated after first generation (review or approved) — adjust settings & re-run
   const canAssemblyRegenerate = stageKey === 'assembly' && (stage.status === 'review' || stage.status === 'approved');
+  // Storyboard can be regenerated after first generation (review or approved)
+  const canStoryboardRegenerate = stageKey === 'storyboard' && (stage.status === 'review' || stage.status === 'approved');
+  // Images can be reset to prompt_ready to re-upload ref images and regenerate (e.g. after storyboard change)
+  const canImagesRegenerate = stageKey === 'images' && (stage.status === 'review' || stage.status === 'approved');
 
   async function handleGenerate() {
     setLoading(true);
     setError(null);
     try {
-      await api.generateStage(project._id, stageKey);
+      const data = stageKey === 'music' && musicPromptOverride ? { musicMood: musicPromptOverride } : undefined;
+      await api.generateStage(project._id, stageKey, data);
       onRefresh();
     } catch (err) {
       setError((err as Error).message);
@@ -110,6 +129,19 @@ export function StagePanel({ project, stageKey, stage, onRefresh }: StagePanelPr
     setError(null);
     try {
       await api.retryStage(project._id, stageKey);
+      onRefresh();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleImagesReset() {
+    setLoading(true);
+    setError(null);
+    try {
+      await api.resetStage(project._id, stageKey);
       onRefresh();
     } catch (err) {
       setError((err as Error).message);
@@ -184,8 +216,8 @@ export function StagePanel({ project, stageKey, stage, onRefresh }: StagePanelPr
             </div>
           )}
 
-          {/* Model picker — shown when about to generate (or for voiceover at any non-locked state) */}
-          {(canGenerate || canVoiceoverRegenerate) && stageKey !== 'assembly' && (
+          {/* Model picker — shown when about to generate (or for voiceover/music/storyboard at any non-locked state) */}
+          {(canGenerate || canVoiceoverRegenerate || canMusicRegenerate || canStoryboardRegenerate) && stageKey !== 'assembly' && (
             <ModelPicker
               projectId={project._id}
               stageKey={stageKey}
@@ -212,6 +244,15 @@ export function StagePanel({ project, stageKey, stage, onRefresh }: StagePanelPr
           {/* Voiceover settings — always shown once unlocked so user can adjust and regenerate */}
           {!isLocked && stageKey === 'voiceover' && (
             <VoiceoverSettingsPanel project={project} stage={stage} onRefresh={onRefresh} />
+          )}
+
+          {/* Music settings — shown when about to generate or regenerate */}
+          {!isLocked && stageKey === 'music' && (
+            <MusicSettingsPanel
+              project={project}
+              stage={stage}
+              onSaved={prompt => setMusicPromptOverride(prompt)}
+            />
           )}
 
           {/* Assembly settings — shown when generating for first time, after failure, or when regenerating */}
@@ -243,14 +284,39 @@ export function StagePanel({ project, stageKey, stage, onRefresh }: StagePanelPr
 
           {/* Action buttons */}
           <div className="flex flex-wrap gap-2">
-            {canGenerate && (
+            {canGenerate && !allScenesManual && (
               <GenerateButton loading={loading} onClick={handleGenerate} />
+            )}
+            {allScenesManual && (
+              <button
+                onClick={handleGenerate}
+                disabled={loading}
+                className="rounded-lg bg-emerald-600 text-white px-4 py-2 text-sm font-medium hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {loading ? 'Processing…' : 'Use My Videos →'}
+              </button>
             )}
             {canVoiceoverRegenerate && (
               <GenerateButton loading={loading} onClick={handleGenerate} label="Regenerate" />
             )}
+            {canMusicRegenerate && (
+              <GenerateButton loading={loading} onClick={handleGenerate} label="Regenerate Music" />
+            )}
             {canAssemblyRegenerate && (
               <GenerateButton loading={loading} onClick={handleGenerate} label="Regenerate Video" />
+            )}
+            {canStoryboardRegenerate && (
+              <GenerateButton loading={loading} onClick={handleGenerate} label="Regenerate Storyboard" />
+            )}
+            {canImagesRegenerate && (
+              <button
+                onClick={handleImagesReset}
+                disabled={loading}
+                className="rounded-lg border border-orange-300 text-orange-600 px-4 py-2 text-sm font-medium hover:bg-orange-50 disabled:opacity-50"
+                title="Reset images stage — clears all generated & uploaded images so you can re-configure and regenerate with the new storyboard"
+              >
+                {loading ? 'Resetting…' : '↺ Reset & Regenerate Images'}
+              </button>
             )}
             {canApprove && (
               <button

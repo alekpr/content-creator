@@ -26,12 +26,23 @@ export async function assembleVideo(
 
   const outputPath = path.join(outputDir, `${projectId}.mp4`);
   const concatPath = path.join(tempDir, 'filelist.txt');
+  const normalizedClips: string[] = [];
 
-  // Step 1: Extend any video clips whose matching audio is longer than the clip
+  // Step 1: Normalize clips first so concat is stable even for user-uploaded files.
+  const preparedPaths = await Promise.all(
+    videoPaths.map(async (videoPath, idx) => {
+      const normalizedPath = path.join(tempDir, `scene_norm_${idx + 1}.mp4`);
+      normalizedClips.push(normalizedPath);
+      await normalizeVideoClip(videoPath, normalizedPath);
+      return normalizedPath;
+    })
+  );
+
+  // Step 2: Extend any video clips whose matching audio is longer than the clip
   // (happens when narration is too long to speed up cleanly — freeze last frame instead)
   const extendedClips: string[] = []; // track for cleanup
   const resolvedPaths = await Promise.all(
-    videoPaths.map(async (videoPath, idx) => {
+    preparedPaths.map(async (videoPath, idx) => {
       const timing = sceneTimings?.[idx];
       if (!timing) return videoPath;
 
@@ -45,11 +56,11 @@ export async function assembleVideo(
     })
   );
 
-  // Step 2: Write concat list (use absolute paths for safety)
+  // Step 3: Write concat list (use absolute paths for safety)
   const fileList = resolvedPaths.map(p => `file '${path.resolve(p)}'`).join('\n');
   fs.writeFileSync(concatPath, fileList);
 
-  // Step 3: Concat video clips
+  // Step 4: Concat video clips
   const concatOutput = path.join(tempDir, 'video_concat.mp4');
   await runFFmpeg(cmd =>
     cmd
@@ -59,11 +70,11 @@ export async function assembleVideo(
       .output(concatOutput)
   );
 
-  // Step 4: Validate audio streams exist
+  // Step 5: Validate audio streams exist
   await validateFileHasStream(voicePath, 'audio');
   if (musicPath) await validateFileHasStream(musicPath, 'audio');
 
-  // Step 5: Mix video + audio
+  // Step 6: Mix video + audio
   //  - Music is looped if shorter than voiceover (stream_loop -1 + duration=first)
   //  - Fade in/out applied to MUSIC only (voiceover stays flat)
   //  - Voiceover just gets volume adjustment
@@ -165,6 +176,9 @@ export async function assembleVideo(
   // Remove intermediate concat + extended-clip files, keep all source assets for review
   if (fs.existsSync(concatPath))  fs.unlinkSync(concatPath);
   if (fs.existsSync(concatOutput)) fs.unlinkSync(concatOutput);
+  for (const p of normalizedClips) {
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  }
   for (const p of extendedClips) {
     if (fs.existsSync(p)) fs.unlinkSync(p);
   }
@@ -175,6 +189,24 @@ export async function assembleVideo(
 }
 
 // ─── FFmpeg Helpers ───────────────────────────────────────────────────────────
+
+function normalizeVideoClip(input: string, output: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    ffmpeg(input)
+      .videoFilters([
+        'fps=30',
+        'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+        'format=yuv420p',
+        'setpts=PTS-STARTPTS',
+      ])
+      .noAudio()
+      .outputOptions(['-c:v libx264', '-preset veryfast', '-crf 23', '-movflags +faststart'])
+      .output(output)
+      .on('end', () => resolve())
+      .on('error', (err: Error) => reject(new Error(`normalizeVideoClip error: ${err.message}`)))
+      .run();
+  });
+}
 
 /**
  * Extend a video clip by freezing its last frame for `extraSecs` seconds.

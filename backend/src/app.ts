@@ -5,6 +5,7 @@ import { getDBStatus } from './config/db.js';
 import { getRedisStatus } from './jobs/video.queue.js';
 import { projectsRouter } from './routes/projects.router.js';
 import { stagesRouter } from './routes/stages.router.js';
+import { nichesRouter } from './routes/niches.router.js';
 import { safeTempPath } from './utils/file.helper.js';
 import { errorMiddleware, notFound } from './middleware/error.middleware.js';
 
@@ -20,7 +21,7 @@ export function createApp() {
     allowedHeaders: ['Content-Type', 'Authorization'],
   }));
 
-  app.use(express.json({ limit: '5mb' }));
+  app.use(express.json({ limit: '30mb' }));
 
   // ─── Health ────────────────────────────────────────────────────────────────
 
@@ -48,6 +49,7 @@ export function createApp() {
 
   app.use('/api/projects', projectsRouter);
   app.use('/api/projects/:id/stages', stagesRouter);
+  app.use('/api/niches', nichesRouter);
 
   // ─── Error Handling ────────────────────────────────────────────────────────
 

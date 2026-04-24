@@ -8,6 +8,13 @@ import type {
   CostBreakdown,
   StageModelConfig,
 } from '@content-creator/shared';
+import { DURATION_VALUES } from '@content-creator/shared';
+
+const LEGACY_DURATION_MAP: Record<string, (typeof DURATION_VALUES)[number]> = {
+  '30s': '32s',
+  '60s': '64s',
+  '3min': '160s',
+};
 
 // ─── Sub-schemas ──────────────────────────────────────────────────────────────
 
@@ -87,7 +94,7 @@ const ProjectSchema = new Schema<ProjectDocument>(
     input: {
       topic: { type: String, required: true },
       platform: { type: String, enum: ['youtube', 'tiktok', 'instagram', 'linkedin'], required: true },
-      duration: { type: String, enum: ['30s', '60s', '3min'], required: true },
+      duration: { type: String, enum: [...DURATION_VALUES], required: true },
       style: { type: String, enum: ['cinematic', 'educational', 'promotional', 'documentary'], required: true },
       language: { type: String, enum: ['en', 'th', 'ja', 'zh', 'ko'], required: true },
       voice: { type: String, required: true },
@@ -129,6 +136,15 @@ const ProjectSchema = new Schema<ProjectDocument>(
 
 ProjectSchema.index({ status: 1 });
 ProjectSchema.index({ createdAt: -1 });
+
+// Allow old projects to remain editable after duration enum migration.
+ProjectSchema.pre('validate', function normalizeLegacyDuration(next) {
+  const current = this.get('input.duration') as string | undefined;
+  if (current && LEGACY_DURATION_MAP[current]) {
+    this.set('input.duration', LEGACY_DURATION_MAP[current]);
+  }
+  next();
+});
 
 // ─── Model ────────────────────────────────────────────────────────────────────
 

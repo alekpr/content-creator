@@ -65,6 +65,7 @@ async function processVideoJob(job: Job<VideoJobData, VideoJobResult>): Promise<
     costUSD = 0;
   } else {
   // Submit to Veo
+  const supportsNegativePrompt = videoModel !== 'veo-3.1-lite-generate-preview';
   let operation = await ai.models.generateVideos({
     model: videoModel ?? 'veo-3.1-fast-generate-preview',
     prompt,
@@ -72,7 +73,7 @@ async function processVideoJob(job: Job<VideoJobData, VideoJobResult>): Promise<
     config: {
       aspectRatio,
       durationSeconds: parseInt(durationSeconds, 10),
-      ...(negativePrompt ? { negativePrompt } : {}),
+      ...(supportsNegativePrompt && negativePrompt ? { negativePrompt } : {}),
     },
   });
 

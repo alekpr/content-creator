@@ -12,12 +12,26 @@ import type { VideoGenerationConfig } from '@content-creator/shared';
 
 // ─── Config Builder ───────────────────────────────────────────────────────────
 
+export function buildVideoPrompt(scene: StoryboardScene): string {
+  const parts: string[] = [];
+  parts.push(`Scene:\n${scene.visual_prompt}`);
+  if (scene.subject)     parts.push(`Subject:\n${scene.subject}`);
+  parts.push(`Shot / Camera Motion:\n${scene.camera_motion}`);
+  if (scene.action)      parts.push(`Action:\n${scene.action}`);
+  if (scene.composition) parts.push(`Composition:\n${scene.composition}`);
+  parts.push(`Emotion:\n${scene.mood}`);
+  if (scene.lighting)    parts.push(`Ambiance / Lighting:\n${scene.lighting}`);
+  parts.push(`Quality / Constraints:\n4K UHD resolution, HDR lighting, sharp focus, hyper-realistic textures, professional cinematic color grading, no text on screen.`);
+  return parts.join('\n\n');
+}
+
 export function buildVideoConfig(
   scene: StoryboardScene,
-  platform: string
+  platform: string,
+  promptOverride?: string
 ): VideoGenerationConfig {
   return {
-    prompt: `${scene.visual_prompt}. Camera: ${scene.camera_motion}. Mood: ${scene.mood}. Cinematic.`,
+    prompt: promptOverride ?? buildVideoPrompt(scene),
     negativePrompt: scene.negative_prompt,
     aspectRatio: platform === 'tiktok' ? '9:16' : '16:9',
     durationSeconds: String(scene.duration) as '4' | '6' | '8',
@@ -32,7 +46,8 @@ export async function submitVideoGenerationJobs(
   sceneImages: SceneImageResult[],
   platform: string,
   attemptNumber: number,
-  videoModel = 'veo-3.1-fast-generate-preview'
+  videoModel = 'veo-3.1-fast-generate-preview',
+  promptOverrides?: Record<string, string>
 ): Promise<string[]> {
   const jobIds: string[] = [];
 
@@ -49,7 +64,7 @@ export async function submitVideoGenerationJobs(
     const image = sceneImages.find(img => img.sceneId === scene.id);
     if (!image?.imageBase64) throw new Error(`No image data for scene ${scene.id}`);
 
-    const config = buildVideoConfig(scene, platform);
+    const config = buildVideoConfig(scene, platform, promptOverrides?.[String(scene.id)]);
     const versionNumber = (existingVideoVersions[String(scene.id)] ?? []).length + 1;
 
     const job = await videoQueue.add(

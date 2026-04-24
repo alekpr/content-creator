@@ -9,6 +9,24 @@ interface Props {
   onRefresh: () => void;
 }
 
+/**
+ * Count spoken words after stripping audio tags.
+ * Uses Intl.Segmenter (built-in, no extra deps) which handles Thai and other
+ * languages that don't use spaces between words.
+ * Falls back to space-splitting for environments that don't support Segmenter.
+ */
+function countSpokenWords(text: string, locale: string): number {
+  const stripped = text.replace(/\[[^\]]*\]/g, '').replace(/\s+/g, ' ').trim();
+  if (!stripped) return 0;
+  if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
+    try {
+      const seg = new (Intl as unknown as { Segmenter: new (locale: string, opts: object) => { segment: (s: string) => Iterable<{ isWordLike?: boolean }> } }).Segmenter(locale, { granularity: 'word' });
+      return [...seg.segment(stripped)].filter(s => s.isWordLike).length;
+    } catch { /* fall through */ }
+  }
+  return stripped.split(/\s+/).length;
+}
+
 const AUDIO_TAG_EXAMPLES = [
   { tag: '[excitedly]', desc: 'Excited, energetic delivery' },
   { tag: '[whispering]', desc: 'Soft, hushed voice' },
@@ -23,6 +41,14 @@ const AUDIO_TAG_EXAMPLES = [
 export function VoiceoverSettingsPanel({ project, stage, onRefresh }: Props) {
   const stageConfig = (stage.stageConfig ?? {}) as VoiceoverStageConfig;
   const storyboard = project.stages.storyboard.result as Storyboard | undefined;
+  const brief = storyboard?.directorsBrief;
+
+  // Brief-derived defaults — used as placeholder when user hasn't typed anything
+  const briefStyle = brief
+    ? [brief.voiceover.narratorPersona, brief.voiceover.emotionalArc, brief.voiceover.deliveryStyle].filter(Boolean).join('. ')
+    : '';
+  const briefPacing = brief?.voiceover.pacing ?? '';
+  const briefAccent = brief?.voiceover.accent ?? '';
 
   const [voice, setVoice] = useState<string>(stageConfig.voice ?? project.input.voice);
   const [style, setStyle] = useState(stageConfig.directorNotes?.style ?? '');
@@ -34,10 +60,13 @@ export function VoiceoverSettingsPanel({ project, stage, onRefresh }: Props) {
 
   const [saving, setSaving] = useState(false);
   const [tagging, setTagging] = useState(false);
+  const [taggingScene, setTaggingScene] = useState<number | null>(null);
+  const [fittingScene, setFittingScene] = useState<number | null>(null);
   const [saved, setSaved] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [tagPreview, setTagPreview] = useState<Array<{ sceneId: number; original: string; enhanced: string }> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [regeneratingScene, setRegeneratingScene] = useState<number | null>(null);
 
   function getNarration(sceneId: number): string {
     return sceneNarrations[String(sceneId)]
@@ -92,6 +121,50 @@ export function VoiceoverSettingsPanel({ project, stage, onRefresh }: Props) {
     setTagPreview(null);
   }
 
+  async function handleAutoTagScene(sceneId: number) {
+    setTaggingScene(sceneId);
+    setError(null);
+    try {
+      const result = await api.autoTagNarrations(project._id, false, sceneId);
+      const scene = result.scenes[0];
+      if (scene) {
+        setSceneNarrations(prev => ({ ...prev, [String(sceneId)]: scene.enhanced }));
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setTaggingScene(null);
+    }
+  }
+
+  async function handleFitTranscript(sceneId: number) {
+    setFittingScene(sceneId);
+    setError(null);
+    try {
+      const result = await api.fitVoiceoverTranscript(project._id, sceneId);
+      setSceneNarrations(prev => ({ ...prev, [String(sceneId)]: result.rewritten }));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setFittingScene(null);
+    }
+  }
+
+  async function handleRegenerateScene(sceneId: number) {
+    setRegeneratingScene(sceneId);
+    setError(null);
+    try {
+      // Save latest narration overrides first so the backend uses the current text
+      await api.saveVoiceoverSettings(project._id, { voice, sceneNarrations });
+      await api.regenerateVoiceoverScene(project._id, sceneId);
+      onRefresh();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setRegeneratingScene(null);
+    }
+  }
+
   const scenes = storyboard?.scenes ?? [];
 
   return (
@@ -122,7 +195,31 @@ export function VoiceoverSettingsPanel({ project, stage, onRefresh }: Props) {
 
       {/* Director's Notes */}
       <div className="space-y-3">
-        <p className="text-xs font-medium text-gray-600">Director's Notes <span className="font-normal text-gray-400">(optional — guide the AI narrator's delivery)</span></p>
+        <div className="flex items-center gap-2">
+          <p className="text-xs font-medium text-gray-600">Director's Notes</p>
+          {brief && !stageConfig.directorNotes?.style && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700">
+              ✦ AI pre-filled from storyboard brief
+            </span>
+          )}
+          {stageConfig.directorNotes?.style && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700">
+              ✎ Custom
+            </span>
+          )}
+        </div>
+        {brief && !stageConfig.directorNotes?.style && (
+          <div className="rounded-lg bg-violet-50 border border-violet-100 p-3 text-xs text-violet-800 space-y-1">
+            <p className="font-medium text-violet-700">Director's Brief (auto-generated)</p>
+            {brief.voiceover.narratorPersona && <p><span className="font-medium">Persona:</span> {brief.voiceover.narratorPersona}</p>}
+            {brief.voiceover.emotionalArc     && <p><span className="font-medium">Emotional arc:</span> {brief.voiceover.emotionalArc}</p>}
+            {brief.voiceover.deliveryStyle    && <p><span className="font-medium">Delivery:</span> {brief.voiceover.deliveryStyle}</p>}
+            {brief.voiceover.pacing           && <p><span className="font-medium">Pacing:</span> {brief.voiceover.pacing}</p>}
+            {brief.voiceover.accent           && <p><span className="font-medium">Accent:</span> {brief.voiceover.accent}</p>}
+            <p className="text-violet-500 pt-1">Override below to customise — otherwise the brief is used automatically.</p>
+          </div>
+        )}
+        <p className="text-xs text-gray-400">Override to fine-tune the AI narrator's delivery. Leave blank to use the auto brief above.</p>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
           <div>
             <label className="block text-xs text-gray-500 mb-1">Style</label>
@@ -130,7 +227,7 @@ export function VoiceoverSettingsPanel({ project, stage, onRefresh }: Props) {
               type="text"
               value={style}
               onChange={e => setStyle(e.target.value)}
-              placeholder="e.g. Enthusiastic, Warm"
+              placeholder={briefStyle || 'e.g. Enthusiastic, Warm'}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
             />
           </div>
@@ -140,7 +237,7 @@ export function VoiceoverSettingsPanel({ project, stage, onRefresh }: Props) {
               type="text"
               value={pacing}
               onChange={e => setPacing(e.target.value)}
-              placeholder="e.g. Slow and deliberate"
+              placeholder={briefPacing || 'e.g. Slow and deliberate'}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
             />
           </div>
@@ -150,7 +247,7 @@ export function VoiceoverSettingsPanel({ project, stage, onRefresh }: Props) {
               type="text"
               value={accent}
               onChange={e => setAccent(e.target.value)}
-              placeholder="e.g. British RP, Neutral"
+              placeholder={briefAccent || 'e.g. British RP, Neutral'}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
             />
           </div>
@@ -221,9 +318,13 @@ export function VoiceoverSettingsPanel({ project, stage, onRefresh }: Props) {
 
           {scenes.map(scene => {
             const text = getNarration(scene.id);
-            const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
-            // ~150 wpm is comfortable spoken pace; scene.duration is the video clip length
-            const safeWords = Math.round(scene.duration * 2.5); // 150wpm
+            // Count spoken words using Intl.Segmenter — handles Thai (no spaces) and audio tags stripped first
+            const wordCount = countSpokenWords(text, project.input.language);
+            // Words-per-second estimate varies by language:
+            //   Thai ~180 syllables/min ≈ ~2.2 words/sec (words are shorter morphemes)
+            //   English/others ~150 wpm ≈ ~2.5 words/sec
+            const wps = project.input.language === 'th' ? 2.2 : 2.5;
+            const safeWords = Math.round(scene.duration * wps);
             const ratio = wordCount / (safeWords || 1);
             const warnLevel: 'ok' | 'caution' | 'over' =
               ratio <= 1.0 ? 'ok' : ratio <= 1.3 ? 'caution' : 'over';
@@ -237,17 +338,48 @@ export function VoiceoverSettingsPanel({ project, stage, onRefresh }: Props) {
                                         'Too long — audio will overflow scene; video will hold last frame';
             return (
               <div key={scene.id} className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs text-gray-500">Scene {scene.id} <span className="text-gray-400">({scene.duration}s)</span></label>
-                  {wordCount > 0 && (
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded-full font-medium ${badgeClass}`}
-                      title={badgeTitle}
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs text-gray-500 shrink-0">Scene {scene.id} <span className="text-gray-400">({scene.duration}s)</span></label>
+                  <div className="flex items-center gap-2 ml-auto">
+                    {wordCount > 0 && (
+                      <span
+                        className={`text-xs px-2 py-0.5 rounded-full font-medium ${badgeClass}`}
+                        title={badgeTitle}
+                      >
+                        {wordCount}w / ~{safeWords}w
+                        {warnLevel === 'over' && ' ⚠ video will freeze'}
+                      </span>
+                    )}
+                    {/* Per-scene auto-tag */}
+                    <button
+                      onClick={() => handleAutoTagScene(scene.id)}
+                      disabled={tagging || taggingScene !== null || fittingScene !== null || regeneratingScene !== null}
+                      title="Auto-tag this scene's narration with expressive audio tags"
+                      className="rounded px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 hover:bg-purple-200 disabled:opacity-50 shrink-0"
                     >
-                      {wordCount}w / ~{safeWords}w
-                      {warnLevel === 'over' && ' ⚠ video will freeze'}
-                    </span>
-                  )}
+                      {taggingScene === scene.id ? '…' : '✦ Tag'}
+                    </button>
+                    {/* Per-scene fit-to-duration */}
+                    <button
+                      onClick={() => handleFitTranscript(scene.id)}
+                      disabled={tagging || taggingScene !== null || fittingScene !== null || regeneratingScene !== null}
+                      title={`Rewrite narration with AI to fit ${scene.duration}s duration`}
+                      className="rounded px-2 py-0.5 text-xs font-medium bg-teal-100 text-teal-700 hover:bg-teal-200 disabled:opacity-50 shrink-0"
+                    >
+                      {fittingScene === scene.id ? '…' : '✂ Fit'}
+                    </button>
+                    {/* Per-scene regenerate — only available after full voiceover has been generated */}
+                    {!!stage.result && (
+                      <button
+                        onClick={() => handleRegenerateScene(scene.id)}
+                        disabled={regeneratingScene !== null || taggingScene !== null || fittingScene !== null}
+                        title="Save settings and regenerate audio for this scene only"
+                        className="rounded px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 hover:bg-orange-200 disabled:opacity-50 shrink-0"
+                      >
+                        {regeneratingScene === scene.id ? '…' : '↻ Regen'}
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <textarea
                   value={text}

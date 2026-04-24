@@ -10,6 +10,34 @@ import { ensureDir } from '../utils/file.helper.js';
 import { env } from '../config/env.js';
 import type { Storyboard, SceneImagePrompt, SceneImageResult } from '@content-creator/shared';
 
+interface ReferenceImageInput {
+  base64: string;
+  mimeType: string;
+}
+
+function buildGlobalImageStylePrefix(storyboard: Storyboard): string[] {
+  const brief = storyboard.imageStyleBrief;
+  if (!brief) return [];
+
+  const parts = [
+    'Global art direction — keep every scene in the same visual universe.',
+    `Visual universe: ${brief.visualUniverse}`,
+    `Palette: ${brief.palette}`,
+    `Lighting family: ${brief.lightingStyle}`,
+    `Composition language: ${brief.compositionStyle}`,
+    `Rendering style: ${brief.renderingStyle}`,
+    `Character consistency: ${brief.characterConsistency}`,
+    `Environment consistency: ${brief.environmentConsistency}`,
+    `Mood progression: ${brief.moodProgression}`,
+  ];
+
+  if (brief.negativeGuardrails) {
+    parts.push(`Continuity guardrails: ${brief.negativeGuardrails}`);
+  }
+
+  return parts;
+}
+
 // ─── Mock PNG Generator (no external deps, no lavfi) ─────────────────────────
 
 // ─── Resize reference image to target aspect ratio via ffmpeg ─────────────────
@@ -132,11 +160,38 @@ function createSceneMockPng(width: number, height: number, sceneId: number): Buf
 export function buildImagePrompts(storyboard: Storyboard, platform = 'youtube'): SceneImagePrompt[] {
   const aspectRatio = platform === 'tiktok' ? '9:16' : '16:9';
   const orientation = platform === 'tiktok' ? 'vertical portrait orientation' : 'horizontal landscape orientation';
-  return storyboard.scenes.map(scene => ({
-    sceneId: scene.id,
-    prompt: `${scene.visual_prompt}, ${scene.mood}, cinematic, high quality, ${aspectRatio} aspect ratio, ${orientation}`,
-    negativePrompt: scene.negative_prompt,
-  }));
+  return storyboard.scenes.map(scene => {
+    const parts: string[] = [...buildGlobalImageStylePrefix(storyboard)];
+
+    // Core scene description
+    parts.push(scene.visual_prompt);
+
+    // Subject — who/what is in frame
+    if (scene.subject) parts.push(`Subject: ${scene.subject}`);
+
+    // Composition — framing and layout
+    if (scene.composition) parts.push(`Composition: ${scene.composition}`);
+
+    // Lighting / ambiance
+    if (scene.lighting) parts.push(`Lighting: ${scene.lighting}`);
+
+    // Mood / emotion
+    parts.push(`Mood: ${scene.mood}`);
+
+    // Focal Point — for video: concentrate viewer attention to specific area (CRITICAL for video clips)
+    if (scene.focal_point) {
+      parts.push(`FOCAL POINT FOR VIDEO CLIP (critical): ${scene.focal_point}. Ensure the viewer's eye is drawn to this specific focus area. Use composition, lighting contrast, and scale to concentrate attention. Avoid competing focal points or busy backgrounds that dilute viewer attention. This image must work as a strong individual clip frame.`);
+    }
+
+    // Technical constraints
+    parts.push(`Cinematic still frame, high quality, photorealistic, ${aspectRatio} aspect ratio, ${orientation}, no text overlay, no watermark, preserve the same theme and visual identity as the other scenes in this project`);
+
+    return {
+      sceneId: scene.id,
+      prompt: parts.join('. '),
+      negativePrompt: scene.negative_prompt,
+    };
+  });
 }
 
 // ─── Single Image ─────────────────────────────────────────────────────────────
@@ -151,8 +206,7 @@ async function generateSingleImage(
   sceneId: number,
   prompt: string,
   model = 'gemini-2.5-flash-image',
-  referenceImageBase64?: string,
-  referenceMimeType = 'image/jpeg',
+  referenceImages: ReferenceImageInput[] = [],
   versionNumber = 1,
   platform = 'youtube'
 ): Promise<SingleImageGen> {
@@ -175,16 +229,16 @@ async function generateSingleImage(
   // All Gemini image models use generateContent() with responseModalities: ['IMAGE']
   const [targetW, targetH] = platform === 'tiktok' ? [720, 1280] : [1280, 720];
   const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [];
-  if (referenceImageBase64) {
+  for (const reference of referenceImages) {
     // Resize reference to target aspect ratio — Gemini follows reference dimensions
     // regardless of text prompt, so we must send it in the correct orientation.
-    const ext = referenceMimeType === 'image/png' ? 'png' : referenceMimeType === 'image/webp' ? 'webp' : 'jpg';
+    const ext = reference.mimeType === 'image/png' ? 'png' : reference.mimeType === 'image/webp' ? 'webp' : 'jpg';
     try {
-      const resizedBuf = resizeRefToTarget(Buffer.from(referenceImageBase64, 'base64'), targetW, targetH, ext);
+      const resizedBuf = resizeRefToTarget(Buffer.from(reference.base64, 'base64'), targetW, targetH, ext);
       parts.push({ inlineData: { mimeType: 'image/png', data: resizedBuf.toString('base64') } });
     } catch {
       // If ffmpeg resize fails (unlikely), fall back to original reference
-      parts.push({ inlineData: { mimeType: referenceMimeType, data: referenceImageBase64 } });
+      parts.push({ inlineData: { mimeType: reference.mimeType, data: reference.base64 } });
     }
   }
   parts.push({ text: `Generate a high-quality image for this scene. ${prompt}` });
@@ -239,7 +293,8 @@ export async function generateImages(
   model = 'gemini-2.5-flash-image',
   referenceImages: Record<string, string> = {},
   manualImages: Record<string, string> = {},
-  platform = 'youtube'
+  platform = 'youtube',
+  styleReferenceImage?: string,
 ): Promise<SceneImageResult[]> {
   const project = await ProjectModel.findById(projectId);
   if (!project) throw new Error(`Project ${projectId} not found`);
@@ -261,20 +316,34 @@ export async function generateImages(
   const manualCount = manualSceneIds.size;
   onProgress(`Generating ${generateCount} images with AI${manualCount ? `, skipping ${manualCount} manual upload(s)` : ''}...`);
 
+  let styleReference: ReferenceImageInput | undefined;
+  if (styleReferenceImage) {
+    const stylePath = path.join(env.TEMP_DIR, projectId, styleReferenceImage);
+    if (fs.existsSync(stylePath)) {
+      styleReference = {
+        base64: fs.readFileSync(stylePath).toString('base64'),
+        mimeType: styleReferenceImage.endsWith('.png') ? 'image/png' : styleReferenceImage.endsWith('.webp') ? 'image/webp' : 'image/jpeg',
+      };
+    }
+  }
+
   const settlements = await Promise.allSettled(
     promptsToGenerate.map(sp => {
+      const references: ReferenceImageInput[] = [];
+      if (styleReference) references.push(styleReference);
+
       const refFilename = referenceImages[String(sp.sceneId)];
-      let refBase64: string | undefined;
-      let refMime = 'image/jpeg';
       if (refFilename) {
         const refPath = path.join(env.TEMP_DIR, projectId, refFilename);
         if (fs.existsSync(refPath)) {
-          refBase64 = fs.readFileSync(refPath).toString('base64');
-          refMime = refFilename.endsWith('.png') ? 'image/png' : refFilename.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+          references.push({
+            base64: fs.readFileSync(refPath).toString('base64'),
+            mimeType: refFilename.endsWith('.png') ? 'image/png' : refFilename.endsWith('.webp') ? 'image/webp' : 'image/jpeg',
+          });
         }
       }
       const versionNumber = versionMap[String(sp.sceneId)] ?? 1;
-      return generateSingleImage(projectId, sp.sceneId, sp.prompt, model, refBase64, refMime, versionNumber, platform);
+      return generateSingleImage(projectId, sp.sceneId, sp.prompt, model, references, versionNumber, platform);
     })
   );
 
@@ -370,31 +439,48 @@ export async function regenerateSceneImage(
   const initProject = await ProjectModel.findById(projectId);
   const platform = (initProject?.input as { platform?: string } | undefined)?.platform ?? 'youtube';
   const refImages = (initProject?.stages.images.referenceImages ?? {}) as Record<string, string>;
+  const stageConfig = (initProject?.stages.images.stageConfig ?? {}) as Record<string, unknown>;
+  const styleReferenceImage = stageConfig.styleReferenceImage as string | undefined;
   const initVersions = (initProject?.stages.images.sceneVersions ?? {}) as Record<string, string[]>;
   const versionNumber = (initVersions[String(sceneId)] ?? []).length + 1;
 
-  // Resolve reference image: user-uploaded ref takes priority; if refineFromCurrent=true, use current generated image
+  // Resolve references: project-wide style reference first, then scene-level/reference refinement.
+  const references: ReferenceImageInput[] = [];
+
+  if (styleReferenceImage) {
+    const stylePath = path.join(env.TEMP_DIR, projectId, styleReferenceImage);
+    if (fs.existsSync(stylePath)) {
+      references.push({
+        base64: fs.readFileSync(stylePath).toString('base64'),
+        mimeType: styleReferenceImage.endsWith('.png') ? 'image/png' : styleReferenceImage.endsWith('.webp') ? 'image/webp' : 'image/jpeg',
+      });
+    }
+  }
+
+  // Scene-specific reference has priority over refineFromCurrent source.
   const refFilename = refImages[String(sceneId)];
-  let refBase64: string | undefined;
-  let refMime = 'image/jpeg';
 
   if (refFilename) {
     const refPath = path.join(env.TEMP_DIR, projectId, refFilename);
     if (fs.existsSync(refPath)) {
-      refBase64 = fs.readFileSync(refPath).toString('base64');
-      refMime = refFilename.endsWith('.png') ? 'image/png' : refFilename.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+      references.push({
+        base64: fs.readFileSync(refPath).toString('base64'),
+        mimeType: refFilename.endsWith('.png') ? 'image/png' : refFilename.endsWith('.webp') ? 'image/webp' : 'image/jpeg',
+      });
     }
   } else if (refineFromCurrent) {
     // Use the current generated image as reference for refinement
     const imageResults = (initProject?.stages.images.result as Array<{ sceneId: number; imagePath: string; filename?: string }> | undefined) ?? [];
     const current = imageResults.find(r => r.sceneId === sceneId);
     if (current?.imagePath && fs.existsSync(current.imagePath)) {
-      refBase64 = fs.readFileSync(current.imagePath).toString('base64');
-      refMime = current.imagePath.endsWith('.png') ? 'image/png' : 'image/jpeg';
+      references.push({
+        base64: fs.readFileSync(current.imagePath).toString('base64'),
+        mimeType: current.imagePath.endsWith('.png') ? 'image/png' : 'image/jpeg',
+      });
     }
   }
 
-  const gen = await generateSingleImage(projectId, sceneId, newPrompt, model, refBase64, refMime, versionNumber, platform);
+  const gen = await generateSingleImage(projectId, sceneId, newPrompt, model, references, versionNumber, platform);
   const result = gen.result;
 
   const project = await ProjectModel.findById(projectId);

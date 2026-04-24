@@ -36,6 +36,16 @@ export function cleanupProjectTemp(projectId: string): void {
 }
 
 /**
+ * Delete a project's output directory and all its contents.
+ */
+export function cleanupProjectOutput(projectId: string): void {
+  const outDir = path.join(env.OUTPUT_DIR, projectId);
+  if (fs.existsSync(outDir)) {
+    fs.rmSync(outDir, { recursive: true, force: true });
+  }
+}
+
+/**
  * Delete temp directories older than the given age in milliseconds.
  */
 export function cleanupOldTempDirs(maxAgeMs: number): void {

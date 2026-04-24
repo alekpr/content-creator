@@ -1,10 +1,24 @@
 import { useState, useRef } from 'react';
-import type { Project, SceneVideoResult, VideoModel } from '@content-creator/shared';
+import type { Project, SceneVideoResult, VideoModel, Storyboard, StoryboardScene } from '@content-creator/shared';
 import { STAGE_MODEL_OPTIONS, DEFAULT_STAGE_MODELS } from '@content-creator/shared';
 import { api } from '../../api/client.ts';
 import { VersionBadges } from './VersionBadges.tsx';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
+
+/** Mirrors buildVideoPrompt() in stage3-videos.ts */
+function assemblePrompt(scene: StoryboardScene): string {
+  const parts: string[] = [];
+  parts.push(`Scene:\n${scene.visual_prompt}`);
+  if (scene.subject)     parts.push(`Subject:\n${scene.subject}`);
+  parts.push(`Shot / Camera Motion:\n${scene.camera_motion}`);
+  if (scene.action)      parts.push(`Action:\n${scene.action}`);
+  if (scene.composition) parts.push(`Composition:\n${scene.composition}`);
+  parts.push(`Emotion:\n${scene.mood}`);
+  if (scene.lighting)    parts.push(`Ambiance / Lighting:\n${scene.lighting}`);
+  parts.push(`Quality / Constraints:\n4K UHD resolution, HDR lighting, sharp focus, hyper-realistic textures, professional cinematic color grading, no text on screen.`);
+  return parts.join('\n\n');
+}
 
 interface ReviewVideosProps {
   project: Project;
@@ -50,6 +64,20 @@ function VideoCard({
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  // Resolve the active prompt for this scene (same priority as backend)
+  const storyboard = project.stages.storyboard.result as Storyboard | undefined;
+  const scene = storyboard?.scenes?.find(s => s.id === video.sceneId);
+  const scenePromptOverrides = ((project.stages.videos.stageConfig as Record<string, unknown> | undefined)?.scenePromptOverrides ?? {}) as Record<string, string>;
+  const autoPrompt = scene ? assemblePrompt(scene) : '';
+  const activePrompt = scenePromptOverrides[String(video.sceneId)] ?? autoPrompt;
+
+  async function handleCopy(text: string) {
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
 
   const sceneVersions = (project.stages.videos.sceneVersions ?? {}) as Record<string, string[]>;
   const versions = sceneVersions[String(video.sceneId)] ?? [];
@@ -222,9 +250,24 @@ function VideoCard({
             </div>
 
             {regenMode === 'refine' ? (
-              <div className="space-y-1">
+              <div className="space-y-1.5">
+                {/* Show the active prompt so user knows what base is used */}
+                {activePrompt && (
+                  <div className="rounded bg-gray-50 border border-gray-200 p-2 space-y-1">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] font-medium text-gray-500">Base prompt (will be kept)</p>
+                      <button
+                        onClick={() => handleCopy(activePrompt)}
+                        className="text-[10px] rounded border border-gray-200 px-1.5 py-0.5 text-gray-500 hover:bg-gray-100"
+                      >
+                        {copied ? '✓ Copied' : '⎘ Copy'}
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-gray-600 leading-relaxed break-words">{activePrompt}</p>
+                  </div>
+                )}
                 <p className="text-[10px] text-gray-400">
-                  Keeps the original storyboard prompt. Add details you want to change or emphasise.
+                  Add details you want to change or emphasise (appended to base prompt).
                 </p>
                 <textarea
                   value={additionalPrompt}
@@ -235,21 +278,37 @@ function VideoCard({
                   className="w-full text-xs border border-gray-300 rounded px-2 py-1 resize-y focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:opacity-50"
                 />
               </div>
-            ) : (
-              <div className="space-y-1">
-                <p className="text-[10px] text-gray-400">
-                  Replaces the prompt entirely. Enter a complete new video description.
-                </p>
+            ) : regenMode === 'full' ? (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] text-gray-400">Replaces the prompt entirely.</p>
+                  {activePrompt && (
+                    <button
+                      onClick={() => { setFullPrompt(activePrompt); }}
+                      className="text-[10px] rounded border border-gray-200 px-1.5 py-0.5 text-gray-500 hover:bg-gray-100 shrink-0"
+                    >
+                      ← Fill from current
+                    </button>
+                  )}
+                </div>
                 <textarea
                   value={fullPrompt}
                   onChange={e => setFullPrompt(e.target.value)}
-                  rows={3}
-                  placeholder="Full prompt for new video clip…"
+                  rows={4}
+                  placeholder={activePrompt || 'Full prompt for new video clip…'}
                   disabled={loading}
                   className="w-full text-xs border border-gray-300 rounded px-2 py-1 resize-y focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:opacity-50"
                 />
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => handleCopy(fullPrompt || activePrompt)}
+                    className="text-[10px] rounded border border-gray-200 px-2 py-0.5 text-gray-500 hover:bg-gray-100"
+                  >
+                    {copied ? '✓ Copied' : '⎘ Copy prompt'}
+                  </button>
+                </div>
               </div>
-            )}
+            ) : null}
 
             {regenMode === 'upload' && (
               <div className="space-y-1">

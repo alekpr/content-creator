@@ -5,8 +5,8 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch --env-file=.env src/server.ts",
-    "build": "tsc",
-    "start": "node --env-file=.env dist/server.js",
+    "build": "rm -rf dist && tsc",
+    "start": "npm run build && node --env-file=.env dist/server.js",
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {

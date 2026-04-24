@@ -39,16 +39,16 @@ export function estimateVideoCost(durationSeconds: number): number {
 
 export function durationToSceneCount(duration: Duration): number {
   switch (duration) {
-    case '30s':  return 4;
-    case '60s':  return 8;
-    case '3min': return 20;
+    case '32s':  return 4;
+    case '64s':  return 8;
+    case '160s': return 20;
   }
 }
 
 export function durationToSeconds(duration: Duration): number {
   switch (duration) {
-    case '30s':  return 30;
-    case '60s':  return 60;
-    case '3min': return 180;
+    case '32s':  return 32;
+    case '64s':  return 64;
+    case '160s': return 160;
   }
 }

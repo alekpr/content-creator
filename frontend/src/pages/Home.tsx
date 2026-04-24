@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
+import { DURATION_VALUES } from '@content-creator/shared';
 import type { Platform, Duration, Style, Language, Voice, CreateProjectResponse } from '@content-creator/shared';
 import { api } from '../api/client.ts';
 import { CostBadge } from '../components/CostBadge.tsx';
@@ -14,7 +15,7 @@ interface ProjectSummary {
 }
 
 const PLATFORMS: Platform[] = ['youtube', 'tiktok', 'instagram', 'linkedin'];
-const DURATIONS: Duration[] = ['30s', '60s', '3min'];
+const DURATIONS = DURATION_VALUES;
 const STYLES: Style[] = ['cinematic', 'educational', 'promotional', 'documentary'];
 const LANGUAGES: Language[] = ['en', 'th', 'ja', 'zh', 'ko'];
 const VOICES: Voice[] = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede'];
@@ -25,11 +26,14 @@ export default function Home() {
   const [showModal, setShowModal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ProjectSummary | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // form state
   const [topic, setTopic] = useState('');
   const [platform, setPlatform] = useState<Platform>('youtube');
-  const [duration, setDuration] = useState<Duration>('60s');
+  const [duration, setDuration] = useState<Duration>('64s');
   const [style, setStyle] = useState<Style>('cinematic');
   const [language, setLanguage] = useState<Language>('en');
   const [voice, setVoice] = useState<Voice>('Puck');
@@ -66,17 +70,40 @@ export default function Home() {
     }
   }
 
+  async function handleDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await api.deleteProject(deleteTarget._id);
+      setProjects(prev => prev.filter(p => p._id !== deleteTarget._id));
+      setDeleteTarget(null);
+    } catch (err) {
+      setDeleteError((err as Error).message);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Nav */}
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <h1 className="text-xl font-bold text-gray-900">AI Video Creator</h1>
-        <button
-          onClick={() => setShowModal(true)}
-          className="rounded-lg bg-blue-600 text-white px-4 py-2 text-sm font-medium hover:bg-blue-700"
-        >
-          + New Project
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/niche-finder"
+            className="rounded-lg bg-purple-600 text-white px-4 py-2 text-sm font-medium hover:bg-purple-700"
+          >
+            Find Your Niche
+          </Link>
+          <button
+            onClick={() => setShowModal(true)}
+            className="rounded-lg bg-blue-600 text-white px-4 py-2 text-sm font-medium hover:bg-blue-700"
+          >
+            + New Project
+          </button>
+        </div>
       </header>
 
       {/* Project list */}
@@ -105,12 +132,99 @@ export default function Home() {
                     p.status === 'in_progress' ? 'bg-blue-100 text-blue-700' :
                     'bg-gray-100 text-gray-500'
                   }`}>{p.status}</span>
+                  <button
+                    onClick={e => { e.stopPropagation(); setDeleteTarget(p); setDeleteError(null); }}
+                    className="rounded-lg px-2 py-1 text-xs text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                    title="Delete project"
+                  >
+                    ✕
+                  </button>
                 </div>
               </div>
             ))}
           </div>
         )}
       </main>
+
+      {/* Delete confirmation modal */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6 space-y-4">
+            <h2 className="text-lg font-semibold text-gray-900">Delete Project?</h2>
+            <p className="text-sm text-gray-600">
+              <span className="font-medium text-gray-800">{deleteTarget.title || 'Untitled'}</span>
+            </p>
+
+            {deleteTarget.costUSD > 0 && (
+              <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800 space-y-1">
+                <p className="font-semibold">⚠️ โปรเจคนี้มี generated resources</p>
+                <p>ระบบจะทำการลบ resources ทั้งหมดที่ได้ generate ออกจากระบบ รวมถึงไฟล์รูปภาพ วิดีโอ เสียง และไฟล์ที่ assembled บน disk ทั้งหมด การกระทำนี้ไม่สามารถกู้คืนได้</p>
+              </div>
+            )}
+
+            {deleteError && (
+              <div className="rounded-lg bg-red-50 border border-red-200 text-red-700 px-3 py-2 text-sm">{deleteError}</div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                onClick={() => { setDeleteTarget(null); setDeleteError(null); }}
+                disabled={deleting}
+                className="rounded-lg border border-gray-300 text-gray-600 px-4 py-2 text-sm hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="rounded-lg bg-red-600 text-white px-4 py-2 text-sm font-medium hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation modal */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6 space-y-4">
+            <h2 className="text-lg font-semibold text-gray-900">Delete Project?</h2>
+            <p className="text-sm text-gray-600">
+              <span className="font-medium text-gray-800">{deleteTarget.title || 'Untitled'}</span>
+            </p>
+
+            {deleteTarget.costUSD > 0 && (
+              <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800 space-y-1">
+                <p className="font-semibold">⚠️ โปรเจคนี้มี generated resources</p>
+                <p>ระบบจะทำการลบ resources ทั้งหมดที่ได้ generate ออกจากระบบ รวมถึงไฟล์รูปภาพ วิดีโอ เสียง และไฟล์ที่ assembled บน disk ทั้งหมด การกระทำนี้ไม่สามารถกู้คืนได้</p>
+              </div>
+            )}
+
+            {deleteError && (
+              <div className="rounded-lg bg-red-50 border border-red-200 text-red-700 px-3 py-2 text-sm">{deleteError}</div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                onClick={() => { setDeleteTarget(null); setDeleteError(null); }}
+                disabled={deleting}
+                className="rounded-lg border border-gray-300 text-gray-600 px-4 py-2 text-sm hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="rounded-lg bg-red-600 text-white px-4 py-2 text-sm font-medium hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* New project modal */}
       {showModal && (
@@ -187,7 +301,7 @@ function SelectField({
   label: string;
   value: string;
   onChange: (v: string) => void;
-  options: string[];
+  options: readonly string[];
 }) {
   return (
     <div>

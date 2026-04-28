@@ -201,6 +201,18 @@ function ImageCard({
             {isManual && (
               <span className="text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full">Manual</span>
             )}
+            <button
+              onClick={() => {
+                setShowRegenerate(true);
+                setRegenMode('upload');
+                setError('');
+              }}
+              disabled={loading}
+              className="text-xs text-emerald-600 hover:underline disabled:opacity-50"
+              title="Use your own image for this scene"
+            >
+              {isManual ? 'Replace my image' : 'Use my image'}
+            </button>
             <a
               href={imageUrl}
               download={img.filename}

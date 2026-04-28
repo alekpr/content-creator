@@ -157,6 +157,80 @@ stagesRouter.patch('/:stage/prompt', validateStage, validate(PromptUpdateSchema)
   } catch (err) { next(err); }
 });
 
+// ─── POST /stages/storyboard/social-meta ─────────────────────────────────────
+// Generates (or regenerates) socialMeta for an existing storyboard without
+// touching the rest of the storyboard result. Useful for old projects.
+
+stagesRouter.post('/storyboard/social-meta', async (req, res, next) => {
+  try {
+    const projectId = (req.params as Record<string, string>)['id'];
+    const project = await ProjectModel.findById(projectId);
+    if (!project) { res.status(404).json({ error: 'Project not found' }); return; }
+
+    const storyboard = project.stages.storyboard.result as Storyboard | undefined;
+    if (!storyboard?.scenes?.length) {
+      res.status(400).json({ error: 'No storyboard result found. Generate the storyboard first.' });
+      return;
+    }
+
+    const { ai } = await import('../services/gemini.service.js');
+    const { DEFAULT_HASHTAGS } = await import('../pipeline/stage1-storyboard.js');
+
+    const platform = project.input.platform;
+    const language = project.input.language;
+    const fullScript = storyboard.scenes
+      .map((s: { id: number; narration: string }) => `Scene ${s.id}: ${s.narration}`)
+      .join('\n');
+
+    const prompt = `You are a social media content strategist.
+Based on the following short-form video script, generate platform-optimised social media metadata.
+Platform: ${platform} | Language: ${language}
+
+SCRIPT:
+${fullScript}
+
+Return JSON only (no markdown):
+{
+  "video_title": "string — punchy title max 60 chars, hook-first, written in ${language}",
+  "description": "string — 2–3 sentence caption/description summarising the video and why it matters, written in ${language}",
+  "hashtags": ["5–10 topic-relevant hashtag strings including the # prefix — do NOT include brand/channel tags"]
+}`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [{ parts: [{ text: prompt }] }],
+      config: { responseMimeType: 'application/json' },
+    });
+
+    const rawText = response.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '{}';
+    let parsed: { video_title?: string; description?: string; hashtags?: string[] } = {};
+    try { parsed = JSON.parse(rawText); } catch { /* keep empty */ }
+
+    const aiHashtags = (parsed.hashtags ?? []).map((h: string) =>
+      h.startsWith('#') ? h : `#${h}`
+    );
+    const mergedHashtags = [...aiHashtags];
+    for (const tag of DEFAULT_HASHTAGS) {
+      if (!mergedHashtags.some(h => h.toLowerCase() === tag.toLowerCase())) {
+        mergedHashtags.push(tag);
+      }
+    }
+
+    const socialMeta = {
+      videoTitle: parsed.video_title ?? storyboard.title,
+      description: parsed.description ?? '',
+      hashtags: mergedHashtags,
+    };
+
+    // Patch only socialMeta into the existing storyboard result
+    await ProjectModel.findByIdAndUpdate(projectId, {
+      'stages.storyboard.result.socialMeta': socialMeta,
+    });
+
+    res.json({ socialMeta });
+  } catch (err) { next(err); }
+});
+
 // ─── PATCH /stages/storyboard/scenes/:sceneId ────────────────────────────────
 
 stagesRouter.patch('/storyboard/scenes/:sceneId', validate(SceneUpdateSchema), async (req, res, next) => {
@@ -347,6 +421,11 @@ async function runGeneration(projectId: string, stageKey: StageKey, project: Pro
           fadeOutSeconds: 1.0,
           outputFormat: 'mp4' as const,
           outputQuality: 'standard' as const,
+          videoFitMode: 'freeze' as const,
+          maxSpeedRatio: 1.5,
+          loopBackgroundMusic: true,
+          sceneTransitionMode: 'cut' as const,
+          transitionDurationSeconds: 0.5,
           ...savedConfig,
           ...(body.config as object | undefined),
         };
@@ -550,11 +629,31 @@ stagesRouter.post('/images/scenes/:sceneId/upload', validate(ReferenceImageSchem
     project.stages.images.sceneVersions = newVersions;
     project.stages.images.reviewData = { previewUrls };
     project.stages.images.stageConfig = { ...stageConfig, manualImages };
+
+    // If every storyboard scene now has an image, auto-enter review mode.
+    const storyboard = project.stages.storyboard.result as Storyboard | undefined;
+    const sceneIds = (storyboard?.scenes ?? []).map(s => s.id);
+    const allScenesHaveImages = sceneIds.length > 0 && sceneIds.every(id => imageResults.some(r => r.sceneId === id));
+    if (allScenesHaveImages && project.stages.images.status !== 'review' && project.stages.images.status !== 'approved') {
+      project.stages.images.status = 'review';
+      project.stages.images.error = undefined;
+    }
+
     project.markModified('stages.images.result');
     project.markModified('stages.images.sceneVersions');
     project.markModified('stages.images.reviewData');
     project.markModified('stages.images.stageConfig');
+    if (allScenesHaveImages) project.markModified('stages.images.status');
     await project.save();
+
+    if (allScenesHaveImages) {
+      emitStageStatus({
+        projectId,
+        stageKey: 'images',
+        status: 'review',
+        message: 'All scene images uploaded. Stage moved to review.',
+      });
+    }
 
     res.json({ filename, previewUrl });
   } catch (err) { next(err); }
@@ -1054,6 +1153,11 @@ const AssemblySettingsSchema = z.object({
   fadeInSeconds: z.number().min(0).max(5).optional(),
   fadeOutSeconds: z.number().min(0).max(5).optional(),
   outputQuality: z.enum(['standard', 'high']).optional(),
+  videoFitMode:  z.enum(['speed', 'freeze']).optional(),
+  maxSpeedRatio: z.number().min(1.0).max(4.0).optional(),
+  loopBackgroundMusic: z.boolean().optional(),
+  sceneTransitionMode: z.enum(['cut', 'xfade']).optional(),
+  transitionDurationSeconds: z.number().min(0.1).max(2.0).optional(),
 });
 
 stagesRouter.patch('/assembly/settings', validate(AssemblySettingsSchema), async (req, res, next) => {
@@ -1131,6 +1235,7 @@ stagesRouter.post('/voiceover/auto-tags', async (req, res, next) => {
     const language = project.input.language;
     const style = project.input.style;
     const platform = project.input.platform;
+    const tagMoodInstruction = stageConfig.tagMoodInstruction?.trim() ?? '';
 
     // For a single-scene call include the full script as context so tone stays consistent
     const contextScenes = singleSceneId !== null ? allScenes : scenes;
@@ -1162,7 +1267,9 @@ RULES:
    - BUT: tense, dramatic, slower for emphasis
    - REVEAL: satisfying, confident, authoritative or warm close
 3. Use tags sparingly — only where they meaningfully affect delivery. Avoid over-tagging every sentence.
-4. Common tags (use these consistently, do not invent unusual tags): [pause], [excitedly], [softly], [whispering], [dramatically], [warmly], [confidently], [slowly], [laughs], [sighs], [emphasize]
+4. Common tags (use these consistently, do not invent unusual tags): [pause], [excitedly], [softly], [whispering], [dramatically], [warmly], [confidently], [slowly], [laughs], [sighs], [emphasize]${tagMoodInstruction ? `
+5. MOOD & TONE DIRECTION (user override — highest priority — apply consistently across ALL scenes):
+   ${tagMoodInstruction}` : ''}
 5. Return a JSON array ONLY — no markdown, no explanation.
 
 FULL SCRIPT CONTEXT (all scenes in order, for tone reference):

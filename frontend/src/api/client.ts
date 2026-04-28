@@ -29,6 +29,12 @@ export const api = {
   deleteProject: (id: string) =>
     request(`/api/projects/${id}`, { method: 'DELETE' }),
 
+  togglePublishStatus: (projectId: string, platform: string, action: 'add' | 'remove') =>
+    request(`/api/projects/${projectId}/publish`, { 
+      method: 'PATCH', 
+      body: JSON.stringify({ platform, action }) 
+    }),
+
   // ─── Stages ─────────────────────────────────────────────────────────────
 
   getStage: (projectId: string, stage: string) =>
@@ -106,6 +112,12 @@ export const api = {
 
   updateScene: (projectId: string, sceneId: number, data: object) =>
     request(`/api/projects/${projectId}/stages/storyboard/scenes/${sceneId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+
+  generateSocialMeta: (projectId: string) =>
+    request<{ socialMeta: { videoTitle: string; description: string; hashtags: string[] } }>(
+      `/api/projects/${projectId}/stages/storyboard/social-meta`,
+      { method: 'POST' }
+    ),
 
   updateStageModel: (projectId: string, stage: string, model: string) =>
     request(`/api/projects/${projectId}/stages/${stage}/model`, { method: 'PATCH', body: JSON.stringify({ model }) }),

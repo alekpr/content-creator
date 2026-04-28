@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { DURATION_VALUES } from '@content-creator/shared';
+import { DURATION_VALUES, TTS_VOICE_METADATA } from '@content-creator/shared';
 import type { Platform, Language, Duration, Style, Voice, CreateProjectResponse, NicheResult } from '@content-creator/shared';
 import { useNicheAnalysis } from '../hooks/useNicheAnalysis.ts';
 import { NicheCard } from '../components/Niche/NicheCard.tsx';
@@ -9,7 +9,6 @@ import { api } from '../api/client.ts';
 const PLATFORMS: Platform[] = ['youtube', 'tiktok', 'instagram', 'linkedin'];
 const DURATIONS = DURATION_VALUES;
 const STYLES: Style[] = ['cinematic', 'educational', 'promotional', 'documentary'];
-const VOICES: Voice[] = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede'];
 const LANGUAGES: { value: Language; label: string }[] = [
   { value: 'th', label: 'Thai' },
   { value: 'en', label: 'English' },
@@ -531,8 +530,10 @@ export default function NicheFinder() {
                     onChange={e => setProjVoice(e.target.value as Voice)}
                     className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
                   >
-                    {VOICES.map(v => (
-                      <option key={v} value={v}>{v}</option>
+                    {TTS_VOICE_METADATA.map(v => (
+                      <option key={v.name} value={v.name}>
+                        {v.name} — {v.description} ({v.gender === 'female' ? 'Female' : 'Male'})
+                      </option>
                     ))}
                   </select>
                 </div>

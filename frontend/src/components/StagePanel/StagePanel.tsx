@@ -51,13 +51,22 @@ export function StagePanel({ project, stageKey, stage, onRefresh }: StagePanelPr
   const canSkip = stageKey === 'music' && (stage.status === 'review' || stage.status === 'prompt_ready');
 
   // Videos stage: detect when ALL scenes have manual videos → allow skipping AI generation
-  const allScenesManual = (() => {
+  const allVideosManual = (() => {
     if (stageKey !== 'videos' || !canGenerate) return false;
     const storyboard = project.stages.storyboard.result as { scenes?: { id: number }[] } | undefined;
     const sceneCount = storyboard?.scenes?.length ?? 0;
     if (sceneCount === 0) return false;
     const manualVideos = ((project.stages.videos.stageConfig as Record<string, unknown> | undefined)?.manualVideos ?? {}) as Record<string, unknown>;
     return Object.keys(manualVideos).length >= sceneCount;
+  })();
+  // Images stage: detect when ALL scenes have manual images → allow confirming manual set
+  const allImagesManual = (() => {
+    if (stageKey !== 'images' || !canGenerate) return false;
+    const storyboard = project.stages.storyboard.result as { scenes?: { id: number }[] } | undefined;
+    const sceneCount = storyboard?.scenes?.length ?? 0;
+    if (sceneCount === 0) return false;
+    const manualImages = ((project.stages.images.stageConfig as Record<string, unknown> | undefined)?.manualImages ?? {}) as Record<string, unknown>;
+    return Object.keys(manualImages).length >= sceneCount;
   })();
   const canReopen = stage.status === 'approved';
   // Voiceover can be regenerated at any time after first generation (review or approved)
@@ -284,16 +293,25 @@ export function StagePanel({ project, stageKey, stage, onRefresh }: StagePanelPr
 
           {/* Action buttons */}
           <div className="flex flex-wrap gap-2">
-            {canGenerate && !allScenesManual && (
+            {canGenerate && !allVideosManual && !allImagesManual && (
               <GenerateButton loading={loading} onClick={handleGenerate} />
             )}
-            {allScenesManual && (
+            {allVideosManual && (
               <button
                 onClick={handleGenerate}
                 disabled={loading}
                 className="rounded-lg bg-emerald-600 text-white px-4 py-2 text-sm font-medium hover:bg-emerald-700 disabled:opacity-50"
               >
                 {loading ? 'Processing…' : 'Use My Videos →'}
+              </button>
+            )}
+            {allImagesManual && (
+              <button
+                onClick={handleGenerate}
+                disabled={loading}
+                className="rounded-lg bg-emerald-600 text-white px-4 py-2 text-sm font-medium hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {loading ? 'Processing…' : 'Use My Images →'}
               </button>
             )}
             {canVoiceoverRegenerate && (

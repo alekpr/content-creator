@@ -78,6 +78,7 @@ export interface ProjectDocument extends Document {
   estimatedCostUSD: number;
   costBreakdown?: CostBreakdown;
   modelConfig?: StageModelConfig;
+  publishedTo?: string[];
   createdAt: Date;
   updatedAt: Date;
   completedAt?: Date;
@@ -123,6 +124,11 @@ const ProjectSchema = new Schema<ProjectDocument>(
       videos:     { type: String, default: 'veo-3.1-fast-generate-preview' },
       voiceover:  { type: String, default: 'gemini-2.5-flash-preview-tts' },
       music:      { type: String, default: 'lyria-3-clip-preview' },
+    },
+    publishedTo: {
+      type: [String],
+      enum: ['youtube', 'tiktok', 'facebook'],
+      default: [],
     },
     completedAt: Date,
   },

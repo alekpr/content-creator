@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Project, StageDoc, VoiceoverStageConfig, Storyboard } from '@content-creator/shared';
-import { TTS_VOICES } from '@content-creator/shared';
+import { TTS_VOICE_METADATA } from '@content-creator/shared';
 import { api } from '../../api/client.ts';
 
 interface Props {
@@ -43,6 +43,12 @@ export function VoiceoverSettingsPanel({ project, stage, onRefresh }: Props) {
   const storyboard = project.stages.storyboard.result as Storyboard | undefined;
   const brief = storyboard?.directorsBrief;
 
+  // AI-recommended voice from storyboard analysis
+  const recommendedVoice = brief?.voiceover.recommendedVoice;
+  
+  // Voice priority: stageConfig.voice (user override) > recommendedVoice (AI) > project.input.voice (default)
+  const defaultVoice = stageConfig.voice ?? recommendedVoice ?? project.input.voice;
+
   // Brief-derived defaults — used as placeholder when user hasn't typed anything
   const briefStyle = brief
     ? [brief.voiceover.narratorPersona, brief.voiceover.emotionalArc, brief.voiceover.deliveryStyle].filter(Boolean).join('. ')
@@ -50,13 +56,14 @@ export function VoiceoverSettingsPanel({ project, stage, onRefresh }: Props) {
   const briefPacing = brief?.voiceover.pacing ?? '';
   const briefAccent = brief?.voiceover.accent ?? '';
 
-  const [voice, setVoice] = useState<string>(stageConfig.voice ?? project.input.voice);
+  const [voice, setVoice] = useState<string>(defaultVoice);
   const [style, setStyle] = useState(stageConfig.directorNotes?.style ?? '');
   const [pacing, setPacing] = useState(stageConfig.directorNotes?.pacing ?? '');
   const [accent, setAccent] = useState(stageConfig.directorNotes?.accent ?? '');
   const [sceneNarrations, setSceneNarrations] = useState<Record<string, string>>(
     stageConfig.sceneNarrations ?? {}
   );
+  const [tagMoodInstruction, setTagMoodInstruction] = useState(stageConfig.tagMoodInstruction ?? '');
 
   const [saving, setSaving] = useState(false);
   const [tagging, setTagging] = useState(false);
@@ -64,6 +71,7 @@ export function VoiceoverSettingsPanel({ project, stage, onRefresh }: Props) {
   const [fittingScene, setFittingScene] = useState<number | null>(null);
   const [saved, setSaved] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  const [systemPromptOpen, setSystemPromptOpen] = useState(false);
   const [tagPreview, setTagPreview] = useState<Array<{ sceneId: number; original: string; enhanced: string }> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [regeneratingScene, setRegeneratingScene] = useState<number | null>(null);
@@ -86,6 +94,7 @@ export function VoiceoverSettingsPanel({ project, stage, onRefresh }: Props) {
         voice,
         directorNotes,
         sceneNarrations,
+        tagMoodInstruction: tagMoodInstruction.trim() || undefined,
       });
       setSaved(true);
       onRefresh();
@@ -180,17 +189,31 @@ export function VoiceoverSettingsPanel({ project, stage, onRefresh }: Props) {
 
       {/* Voice Picker */}
       <div className="space-y-1">
-        <label className="block text-xs font-medium text-gray-600">Voice</label>
+        <div className="flex items-center gap-2">
+          <label className="block text-xs font-medium text-gray-600">Voice</label>
+          {recommendedVoice && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-700">
+              ✦ AI selected: {recommendedVoice}
+            </span>
+          )}
+        </div>
         <select
           value={voice}
           onChange={e => setVoice(e.target.value)}
           className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
         >
-          {TTS_VOICES.map(v => (
-            <option key={v} value={v}>{v}</option>
+          {TTS_VOICE_METADATA.map(v => (
+            <option key={v.name} value={v.name}>
+              {v.name} — {v.description} ({v.gender === 'female' ? 'Female' : 'Male'})
+              {v.name === recommendedVoice ? ' ★ AI Recommended' : ''}
+            </option>
           ))}
         </select>
-        <p className="text-xs text-gray-400">Overrides the project-level voice for this stage.</p>
+        <p className="text-xs text-gray-400">
+          {recommendedVoice 
+            ? 'AI analyzed your story and selected this voice. You can override it here.'
+            : 'Choose a voice that matches your content tone. Will be used for all narrations.'}
+        </p>
       </div>
 
       {/* Director's Notes */}
@@ -277,6 +300,56 @@ export function VoiceoverSettingsPanel({ project, stage, onRefresh }: Props) {
                 {tagging ? 'Generating tags…' : '✦ Auto-tag with AI'}
               </button>
             </div>
+          </div>
+
+          {/* Mood & Tone Instruction for AI tagger */}
+          <div className="space-y-1">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-medium text-gray-600">Mood &amp; Tone Direction</label>
+                {tagMoodInstruction.trim() && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-medium text-purple-700">
+                    ✦ Active
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={() => setSystemPromptOpen(o => !o)}
+                className="text-xs text-gray-400 hover:text-purple-600 hover:underline shrink-0"
+              >
+                {systemPromptOpen ? 'Hide default prompt' : 'View default AI prompt'}
+              </button>
+            </div>
+
+            {/* Collapsible: show the default system prompt baked into the tagger */}
+            {systemPromptOpen && (
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700 space-y-2">
+                <p className="font-medium text-gray-600">Default instructions sent to AI (always applied)</p>
+                <ol className="list-decimal list-inside space-y-1 text-gray-600">
+                  <li>Maintain a <strong>consistent</strong> vocal tone across all scenes — as if one narrator records the whole video in a single session.</li>
+                  <li>Tags must <strong>flow naturally</strong> across scene boundaries; the energy arc should match the narrative structure:
+                    <ul className="list-none ml-4 mt-0.5 space-y-0.5 text-gray-500">
+                      <li><code className="bg-gray-200 px-1 rounded">HOOK</code> — energetic, attention-grabbing, slightly faster pace</li>
+                      <li><code className="bg-gray-200 px-1 rounded">CONTEXT</code> — clear, informative, steady and warm</li>
+                      <li><code className="bg-gray-200 px-1 rounded">BUT</code> — tense, dramatic, slower for emphasis</li>
+                      <li><code className="bg-gray-200 px-1 rounded">REVEAL</code> — satisfying, confident, authoritative or warm close</li>
+                    </ul>
+                  </li>
+                  <li>Use tags <strong>sparingly</strong> — only where they meaningfully affect delivery.</li>
+                  <li>Allowed tags: <code className="bg-gray-200 px-1 rounded">[pause]</code> <code className="bg-gray-200 px-1 rounded">[excitedly]</code> <code className="bg-gray-200 px-1 rounded">[softly]</code> <code className="bg-gray-200 px-1 rounded">[whispering]</code> <code className="bg-gray-200 px-1 rounded">[dramatically]</code> <code className="bg-gray-200 px-1 rounded">[warmly]</code> <code className="bg-gray-200 px-1 rounded">[confidently]</code> <code className="bg-gray-200 px-1 rounded">[slowly]</code> <code className="bg-gray-200 px-1 rounded">[laughs]</code> <code className="bg-gray-200 px-1 rounded">[sighs]</code> <code className="bg-gray-200 px-1 rounded">[emphasize]</code></li>
+                </ol>
+                <p className="text-gray-400 pt-1">Your Mood &amp; Tone Direction below overrides these defaults with <strong>highest priority</strong>.</p>
+              </div>
+            )}
+
+            <textarea
+              value={tagMoodInstruction}
+              onChange={e => setTagMoodInstruction(e.target.value)}
+              rows={2}
+              placeholder="e.g. ให้โทนดาร์กและ mysterious ตลอด, ใช้ pause เยอะ, หลีกเลี่ยง excitedly — หรือ: dark and mysterious throughout, heavy use of pauses, avoid upbeat tags"
+              className="w-full rounded-lg border border-purple-200 bg-purple-50 px-3 py-2 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-400"
+            />
+            <p className="text-xs text-gray-400">Applied to <strong>all scenes</strong> when using ✦ Auto-tag or ✦ Tag. Save settings first, then run Auto-tag.</p>
           </div>
 
           {/* Collapsible audio tag guide */}

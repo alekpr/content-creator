@@ -9,6 +9,30 @@ interface ReviewStoryboardProps {
 
 export function ReviewStoryboard({ project, onRefresh }: ReviewStoryboardProps) {
   const storyboard = project.stages.storyboard.result as Storyboard | undefined;
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [generatingMeta, setGeneratingMeta] = useState(false);
+  const [metaError, setMetaError] = useState<string | null>(null);
+
+  function copyToClipboard(text: string, field: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 2000);
+    });
+  }
+
+  async function handleGenerateSocialMeta() {
+    setGeneratingMeta(true);
+    setMetaError(null);
+    try {
+      await api.generateSocialMeta(project._id);
+      onRefresh();
+    } catch (err) {
+      setMetaError((err as Error).message);
+    } finally {
+      setGeneratingMeta(false);
+    }
+  }
+
   if (!storyboard) return <p className="text-sm text-gray-400">No storyboard result yet.</p>;
 
   return (
@@ -78,6 +102,106 @@ export function ReviewStoryboard({ project, onRefresh }: ReviewStoryboardProps) 
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Social Meta — title, description, hashtags for YouTube / TikTok */}
+      {storyboard.socialMeta ? (
+        <div className="rounded-lg bg-green-50 border border-green-200 p-3 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold text-green-700 uppercase tracking-wide">✦ Social Media Meta</p>
+            <button
+              onClick={handleGenerateSocialMeta}
+              disabled={generatingMeta}
+              className="text-xs text-gray-400 hover:text-green-700 disabled:opacity-50"
+              title="Regenerate title, description, and hashtags"
+            >
+              {generatingMeta ? 'Regenerating…' : '↻ Regenerate'}
+            </button>
+          </div>
+
+          {/* Video Title */}
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-green-600">Video Title</p>
+              <button
+                onClick={() => copyToClipboard(storyboard.socialMeta!.videoTitle, 'title')}
+                className="text-xs text-gray-400 hover:text-green-700 transition-colors"
+              >
+                {copiedField === 'title' ? '✓ Copied' : 'Copy'}
+              </button>
+            </div>
+            <p className="text-sm text-gray-800 font-medium">{storyboard.socialMeta.videoTitle}</p>
+          </div>
+
+          {/* Description */}
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-green-600">Description / Caption</p>
+              <button
+                onClick={() => copyToClipboard(storyboard.socialMeta!.description, 'description')}
+                className="text-xs text-gray-400 hover:text-green-700 transition-colors"
+              >
+                {copiedField === 'description' ? '✓ Copied' : 'Copy'}
+              </button>
+            </div>
+            <p className="text-xs text-gray-700 whitespace-pre-wrap">{storyboard.socialMeta.description}</p>
+          </div>
+
+          {/* Hashtags */}
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-green-600">Hashtags</p>
+              <button
+                onClick={() => copyToClipboard(storyboard.socialMeta!.hashtags.join(' '), 'hashtags')}
+                className="text-xs text-gray-400 hover:text-green-700 transition-colors"
+              >
+                {copiedField === 'hashtags' ? '✓ Copied' : 'Copy all'}
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {storyboard.socialMeta.hashtags.map(tag => (
+                <span
+                  key={tag}
+                  onClick={() => copyToClipboard(tag, tag)}
+                  title="Click to copy"
+                  className={`cursor-pointer rounded-full px-2 py-0.5 text-xs font-medium transition-colors ${
+                    copiedField === tag
+                      ? 'bg-green-500 text-white'
+                      : 'bg-green-100 text-green-700 hover:bg-green-200'
+                  }`}
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          {/* Copy all */}
+          <div className="pt-1 border-t border-green-200">
+            <button
+              onClick={() => {
+                const full = `${storyboard.socialMeta!.videoTitle}\n\n${storyboard.socialMeta!.description}\n\n${storyboard.socialMeta!.hashtags.join(' ')}`;
+                copyToClipboard(full, 'all');
+              }}
+              className="w-full rounded-lg bg-green-600 text-white px-3 py-1.5 text-xs font-medium hover:bg-green-700 transition-colors"
+            >
+              {copiedField === 'all' ? '✓ Copied everything' : 'Copy title + description + hashtags'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-lg border border-dashed border-green-300 bg-green-50 p-4 space-y-2 text-center">
+          <p className="text-xs font-medium text-green-700">✦ Social Media Meta</p>
+          <p className="text-xs text-gray-500">Generate an AI-written title, description, and hashtags for this video — works on existing projects.</p>
+          {metaError && <p className="text-xs text-red-600">{metaError}</p>}
+          <button
+            onClick={handleGenerateSocialMeta}
+            disabled={generatingMeta}
+            className="rounded-lg bg-green-600 text-white px-4 py-1.5 text-xs font-medium hover:bg-green-700 disabled:opacity-50"
+          >
+            {generatingMeta ? 'Generating…' : '✦ Generate Social Meta'}
+          </button>
         </div>
       )}
 

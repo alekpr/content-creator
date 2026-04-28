@@ -30,6 +30,7 @@ const DirectorsBriefSchema = z.object({
     deliveryStyle:   z.string().default(''),
     pacing:          z.string().default(''),
     accent:          z.string().default(''),
+    recommendedVoice: z.string().optional(),
   }),
   music: z.object({
     genre:       z.string().default(''),
@@ -52,6 +53,12 @@ const ImageStyleBriefSchema = z.object({
   negative_guardrails: z.string().default(''),
 });
 
+const SocialMetaSchema = z.object({
+  video_title: z.string().default(''),
+  description: z.string().default(''),
+  hashtags: z.array(z.string()).default([]),
+});
+
 const StoryboardSchema = z.object({
   title: z.string().min(1),
   hook: z.string().default(''),
@@ -61,7 +68,14 @@ const StoryboardSchema = z.object({
   music_mood: z.string().default('upbeat'),
   image_style_brief: ImageStyleBriefSchema.optional(),
   directors_brief: DirectorsBriefSchema.optional(),
+  social_meta: SocialMetaSchema.optional(),
 });
+
+// Default hashtags always appended to AI-generated ones
+export const DEFAULT_HASHTAGS = [
+  '#TechBit', '#TechShorts', '#เล่าเรื่องเทค', '#ไอทีน่ารู้',
+  '#สรุปเทค', '#เทคโนโลยี', '#Shorts',
+];
 
 function mapImageStyleBrief(brief: z.infer<typeof ImageStyleBriefSchema>): ImageStyleBrief {
   return {
@@ -224,13 +238,19 @@ JSON format (return this structure ONLY):
   "total_scenes": ${sceneCount},
   "estimated_duration_seconds": ${sceneCount * 8},
   "music_mood": "string (short summary, fallback only)",
+  "social_meta": {
+    "video_title": "string — punchy, platform-optimised title (max 60 chars) for YouTube/TikTok/Instagram. Hook-first, written in ${input.language}",
+    "description": "string — 2–3 sentence caption/description. Summarise what the video is about and why it matters. Written in ${input.language}",
+    "hashtags": ["array of 5-10 topic-relevant hashtag strings including the # prefix, e.g. \"#AI\", \"#เทคโนโลยี\" — do NOT include brand/channel tags here"]
+  },
   "directors_brief": {
     "voiceover": {
       "narratorPersona": "string — who is the narrator? e.g. 'a warm, slightly mysterious Thai storyteller in their 30s'",
       "emotionalArc": "string — how should the narrator's emotion evolve? e.g. 'start intrigued → grow concerned → arrive at calm clarity'",
       "deliveryStyle": "string — overall delivery style e.g. 'conversational, not too formal; slower and heavier on BUT act scenes'",
       "pacing": "string — pacing notes e.g. 'medium pace, pause 0.5s after each scene transition, speed up during reveals'",
-      "accent": "string — language/accent guidance e.g. 'neutral ${input.language}, clear articulation, avoid filler sounds'"
+      "accent": "string — language/accent guidance e.g. 'neutral ${input.language}, clear articulation, avoid filler sounds'",
+      "recommendedVoice": "string (REQUIRED) — AI-selected voice name from: Zephyr (Female, Bright), Puck (Male, Upbeat), Charon (Male, Informative), Kore (Female, Firm), Fenrir (Male, Excitable), Leda (Female, Youthful), Orus (Male, Firm), Aoede (Female, Breezy), Callirrhoe (Female, Easy-going), Autonoe (Female, Bright), Enceladus (Male, Breathy), Iapetus (Male, Clear), Umbriel (Male, Easy-going), Algieba (Female, Smooth), Despina (Female, Smooth), Erinome (Female, Clear), Algenib (Male, Gravelly), Rasalgethi (Male, Informative), Laomedeia (Female, Upbeat), Achernar (Male, Soft), Alnilam (Male, Firm), Schedar (Female, Even), Gacrux (Male, Mature), Pulcherrima (Female, Forward), Achird (Female, Friendly), Zubenelgenubi (Male, Casual), Vindemiatrix (Female, Gentle), Sadachbia (Female, Lively), Sadaltager (Male, Knowledgeable), Sulafat (Female, Warm). Choose based on: (1) main character gender if story follows a character, (2) narrator persona tone (e.g. 'Firm' for authoritative, 'Warm' for comforting, 'Informative' for educational), (3) content mood (e.g. 'Upbeat' for positive stories, 'Breathy' for intimate/personal). Return ONLY the voice name (e.g. 'Kore')"
     },
     "music": {
       "genre": "string — music genre that fits the narrative e.g. 'cinematic electronic', 'ambient lo-fi', 'orchestral drama'",
@@ -292,6 +312,17 @@ export async function generateStoryboard(
     const validated = StoryboardSchema.parse(parsed);
 
     // Map snake_case AI output → camelCase Storyboard type
+    const aiHashtags = (validated.social_meta?.hashtags ?? []).map((h: string) =>
+      h.startsWith('#') ? h : `#${h}`
+    );
+    // Merge AI tags with defaults — deduplicate by lowercased value
+    const mergedHashtags = [...aiHashtags];
+    for (const tag of DEFAULT_HASHTAGS) {
+      if (!mergedHashtags.some(h => h.toLowerCase() === tag.toLowerCase())) {
+        mergedHashtags.push(tag);
+      }
+    }
+
     storyboard = {
       title: validated.title,
       hook: validated.hook,
@@ -301,6 +332,13 @@ export async function generateStoryboard(
       music_mood: validated.music_mood,
       ...(validated.image_style_brief ? { imageStyleBrief: mapImageStyleBrief(validated.image_style_brief) } : {}),
       ...(validated.directors_brief ? { directorsBrief: validated.directors_brief } : {}),
+      ...(validated.social_meta ? {
+        socialMeta: {
+          videoTitle: validated.social_meta.video_title,
+          description: validated.social_meta.description,
+          hashtags: mergedHashtags,
+        },
+      } : {}),
     } as Storyboard;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

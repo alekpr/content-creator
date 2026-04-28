@@ -94,7 +94,7 @@ export default function Project() {
       <main className="max-w-3xl mx-auto px-6 pb-12 space-y-3">
         {STAGE_KEYS.map(key => (
           <StagePanel
-            key={key}
+            key={`${project._id}-${key}`}
             project={project}
             stageKey={key}
             stage={project.stages[key]}

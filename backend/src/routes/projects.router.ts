@@ -71,7 +71,7 @@ projectsRouter.get('/', async (_req, res, next) => {
   try {
     const projects = await ProjectModel.find({})
       .sort({ createdAt: -1 })
-      .select('title status input costUSD estimatedCostUSD createdAt updatedAt');
+      .select('title status input costUSD estimatedCostUSD createdAt updatedAt publishedTo');
 
     res.json(projects);
   } catch (err) {
@@ -110,6 +110,50 @@ projectsRouter.delete('/:id', async (req, res, next) => {
     await GenerationLogModel.deleteMany({ projectId: project._id });
     res.json({ deleted: true });
   } catch (err) {
+    next(err);
+  }
+});
+
+// ─── PATCH /api/projects/:id/publish ──────────────────────────────────────────
+
+projectsRouter.patch('/:id/publish', async (req, res, next) => {
+  try {
+    const { platform, action } = req.body;
+    console.log('🔄 PATCH /api/projects/:id/publish', { projectId: req.params.id, platform, action });
+    
+    if (!platform || !['youtube', 'tiktok', 'facebook'].includes(platform)) {
+      res.status(400).json({ error: 'Invalid platform' });
+      return;
+    }
+    
+    if (!action || !['add', 'remove'].includes(action)) {
+      res.status(400).json({ error: 'Invalid action' });
+      return;
+    }
+    
+    // Use Mongoose operators to properly update array
+    const updateOperation = action === 'add' 
+      ? { $addToSet: { publishedTo: platform } }  // Add only if not exists
+      : { $pull: { publishedTo: platform } };     // Remove from array
+    
+    console.log('📝 Update operation:', updateOperation);
+    
+    const updated = await ProjectModel.findByIdAndUpdate(
+      req.params.id,
+      updateOperation,
+      { new: true }  // Return updated document
+    );
+    
+    if (!updated) {
+      console.log('❌ Project not found:', req.params.id);
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+    
+    console.log('✅ Updated publishedTo:', updated.publishedTo);
+    res.json(updated);
+  } catch (err) {
+    console.error('❌ Error in PATCH /publish:', err);
     next(err);
   }
 });

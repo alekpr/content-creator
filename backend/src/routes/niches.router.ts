@@ -115,8 +115,19 @@ nichesRouter.post('/:id/results/:nicheIndex/more-ideas', async (req, res, next) 
       doc.input.language,
     );
 
-    // Append to DB so subsequent "load more" won't repeat
-    doc.results[nicheIndex].contentIdeas = [...niche.contentIdeas, ...newIdeas];
+    // Append unique ideas to DB so subsequent "load more" won't repeat.
+    const mergedIdeas = [...niche.contentIdeas];
+    const seenIdeas = new Set(niche.contentIdeas.map(idea => idea.trim().toLocaleLowerCase()));
+
+    for (const idea of newIdeas) {
+      const normalized = idea.trim();
+      const key = normalized.toLocaleLowerCase();
+      if (!normalized || seenIdeas.has(key)) continue;
+      mergedIdeas.push(normalized);
+      seenIdeas.add(key);
+    }
+
+    doc.results[nicheIndex].contentIdeas = mergedIdeas;
     doc.markModified('results');
     await doc.save();
 

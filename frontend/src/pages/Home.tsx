@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { DURATION_VALUES } from '@content-creator/shared';
-import type { Platform, Duration, Style, Language, Voice, CreateProjectResponse } from '@content-creator/shared';
+import { DURATION_VALUES, TTS_VOICE_METADATA } from '@content-creator/shared';
+import type { Platform, Duration, Style, Language, Voice, CreateProjectResponse, PublishPlatform } from '@content-creator/shared';
 import { api } from '../api/client.ts';
 import { CostBadge } from '../components/CostBadge.tsx';
 
@@ -12,13 +12,13 @@ interface ProjectSummary {
   costUSD: number;
   estimatedCostUSD: number;
   createdAt: string;
+  publishedTo?: PublishPlatform[];
 }
 
 const PLATFORMS: Platform[] = ['youtube', 'tiktok', 'instagram', 'linkedin'];
 const DURATIONS = DURATION_VALUES;
 const STYLES: Style[] = ['cinematic', 'educational', 'promotional', 'documentary'];
 const LANGUAGES: Language[] = ['en', 'th', 'ja', 'zh', 'ko'];
-const VOICES: Voice[] = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede'];
 
 export default function Home() {
   const navigate = useNavigate();
@@ -119,26 +119,37 @@ export default function Home() {
               <div
                 key={p._id}
                 onClick={() => navigate(`/projects/${p._id}`)}
-                className="rounded-xl bg-white border border-gray-200 px-4 py-3 flex items-center justify-between cursor-pointer hover:border-blue-400 transition-colors"
+                className="rounded-xl bg-white border border-gray-200 px-4 py-3 cursor-pointer hover:border-blue-400 transition-colors"
               >
-                <div>
-                  <p className="font-medium text-gray-800">{p.title || 'Untitled'}</p>
-                  <p className="text-xs text-gray-400">{new Date(p.createdAt).toLocaleDateString()}</p>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium text-gray-800">{p.title || 'Untitled'}</p>
+                    <p className="text-xs text-gray-400">{new Date(p.createdAt).toLocaleDateString()}</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <CostBadge usd={p.costUSD > 0 ? p.costUSD : p.estimatedCostUSD} label={p.costUSD > 0 ? 'actual' : 'est.'} />
+                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                      p.status === 'completed' ? 'bg-green-100 text-green-700' :
+                      p.status === 'in_progress' ? 'bg-blue-100 text-blue-700' :
+                      'bg-gray-100 text-gray-500'
+                    }`}>{p.status}</span>
+                    <button
+                      onClick={e => { e.stopPropagation(); setDeleteTarget(p); setDeleteError(null); }}
+                      className="rounded-lg px-2 py-1 text-xs text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                      title="Delete project"
+                    >
+                      ✕
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-3">
-                  <CostBadge usd={p.costUSD > 0 ? p.costUSD : p.estimatedCostUSD} label={p.costUSD > 0 ? 'actual' : 'est.'} />
-                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                    p.status === 'completed' ? 'bg-green-100 text-green-700' :
-                    p.status === 'in_progress' ? 'bg-blue-100 text-blue-700' :
-                    'bg-gray-100 text-gray-500'
-                  }`}>{p.status}</span>
-                  <button
-                    onClick={e => { e.stopPropagation(); setDeleteTarget(p); setDeleteError(null); }}
-                    className="rounded-lg px-2 py-1 text-xs text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
-                    title="Delete project"
-                  >
-                    ✕
-                  </button>
+                
+                {/* Published platforms badges */}
+                <div className="mt-2 pt-2 border-t border-gray-100">
+                  <PublishBadges project={p} onUpdate={() => {
+                    api.listProjects()
+                      .then(data => setProjects(data as ProjectSummary[]))
+                      .catch(console.error);
+                  }} />
                 </div>
               </div>
             ))}
@@ -256,7 +267,23 @@ export default function Home() {
                 <SelectField label="Duration" value={duration} onChange={v => setDuration(v as Duration)} options={DURATIONS} />
                 <SelectField label="Style" value={style} onChange={v => setStyle(v as Style)} options={STYLES} />
                 <SelectField label="Language" value={language} onChange={v => setLanguage(v as Language)} options={LANGUAGES} />
-                <SelectField label="Voice" value={voice} onChange={v => setVoice(v as Voice)} options={VOICES} />
+                
+                {/* Voice selector with metadata */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Voice</label>
+                  <select
+                    value={voice}
+                    onChange={e => setVoice(e.target.value as Voice)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                  >
+                    {TTS_VOICE_METADATA.map(v => (
+                      <option key={v.name} value={v.name}>
+                        {v.name} — {v.description} ({v.gender === 'female' ? 'Female' : 'Male'})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                
                 <div className="flex items-center gap-2 pt-4">
                   <input
                     type="checkbox"
@@ -288,6 +315,83 @@ export default function Home() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function PublishBadges({ 
+  project, 
+  onUpdate 
+}: { 
+  project: ProjectSummary; 
+  onUpdate: () => void;
+}) {
+  const [updating, setUpdating] = useState<PublishPlatform | null>(null);
+  
+  const platforms: { key: PublishPlatform; label: string; icon: string; colorClass: string; colorClassInactive: string }[] = [
+    { 
+      key: 'youtube', 
+      label: 'YouTube', 
+      icon: '▶', 
+      colorClass: 'bg-red-100 text-red-700 border-red-200',
+      colorClassInactive: 'bg-gray-100 text-gray-400 border-gray-200 hover:bg-gray-150'
+    },
+    { 
+      key: 'tiktok', 
+      label: 'TikTok', 
+      icon: '♪', 
+      colorClass: 'bg-gray-900 text-white border-gray-900',
+      colorClassInactive: 'bg-gray-100 text-gray-400 border-gray-200 hover:bg-gray-150'
+    },
+    { 
+      key: 'facebook', 
+      label: 'FB', 
+      icon: 'f', 
+      colorClass: 'bg-blue-100 text-blue-700 border-blue-200',
+      colorClassInactive: 'bg-gray-100 text-gray-400 border-gray-200 hover:bg-gray-150'
+    },
+  ];
+  
+  async function togglePlatform(e: React.MouseEvent, platform: PublishPlatform) {
+    e.stopPropagation();
+    setUpdating(platform);
+    try {
+      const isPublished = project.publishedTo?.includes(platform);
+      console.log('Toggle platform:', { platform, action: isPublished ? 'remove' : 'add', projectId: project._id });
+      const response = await api.togglePublishStatus(project._id, platform, isPublished ? 'remove' : 'add');
+      console.log('Response:', response);
+      onUpdate();
+    } catch (err) {
+      console.error('Toggle error:', err);
+    } finally {
+      setUpdating(null);
+    }
+  }
+  
+  return (
+    <div className="flex items-center gap-1.5">
+      {platforms.map(p => {
+        const isPublished = project.publishedTo?.includes(p.key);
+        const isLoading = updating === p.key;
+        
+        return (
+          <button
+            key={p.key}
+            onClick={(e) => togglePlatform(e, p.key)}
+            disabled={isLoading}
+            className={`
+              inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium transition-all border
+              ${isPublished ? p.colorClass : p.colorClassInactive}
+              ${isLoading ? 'opacity-50 cursor-wait' : 'cursor-pointer'}
+            `}
+            title={`${isPublished ? 'Published to' : 'Not published to'} ${p.label}`}
+          >
+            <span>{p.icon}</span>
+            <span>{p.label}</span>
+            {isPublished && <span className="text-green-600 font-bold">✓</span>}
+          </button>
+        );
+      })}
     </div>
   );
 }

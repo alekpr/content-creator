@@ -10,13 +10,48 @@ import type { Storyboard, VoiceoverConfig, VoiceoverDirectorNotes, VoiceoverResu
 
 ffmpeg.setFfmpegPath(env.FFMPEG_PATH);
 
+function sanitizeDirectorNoteText(text?: string): string {
+  if (!text) return '';
+
+  const cleaned = text
+    // Strip quoted script fragments that may be spoken literally by TTS.
+    .replace(/"[^"]*"/g, ' ')
+    .replace(/'[^']*'/g, ' ')
+    .replace(/“[^”]*”/g, ' ')
+    .replace(/‘[^’]*’/g, ' ')
+    .replace(/「[^」]*」/g, ' ')
+    .replace(/『[^』]*』/g, ' ')
+    // Normalize phrase-specific pause directives into generic transition cues.
+    .replace(/(pause[^.\n]{0,80}?before)\s+[^.;,\n]{1,120}/gi, '$1 key transition')
+    .replace(/(หยุด[^.\n]{0,80}?ก่อน)\s+[^.;,\n]{1,120}/gi, '$1 ช่วงเปลี่ยนฉากสำคัญ')
+    // Remove explicit scene references from global direction notes.
+    .replace(/\bscene\s*\d+\b/gi, 'scene')
+    .replace(/\bฉาก\s*\d+\b/g, 'ฉาก')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // Keep control text short to avoid instruction drift in TTS models.
+  return cleaned.slice(0, 220);
+}
+
+function sanitizeDirectorNotes(notes?: VoiceoverDirectorNotes): VoiceoverDirectorNotes | undefined {
+  if (!notes) return undefined;
+  const sanitized: VoiceoverDirectorNotes = {
+    style: sanitizeDirectorNoteText(notes.style),
+    pacing: sanitizeDirectorNoteText(notes.pacing),
+    accent: sanitizeDirectorNoteText(notes.accent),
+  };
+  if (!sanitized.style && !sanitized.pacing && !sanitized.accent) return undefined;
+  return sanitized;
+}
+
 /** Convert DirectorsBriefVoiceover → VoiceoverDirectorNotes for buildTtsPrompt */
 function briefToDirectorNotes(brief: NonNullable<Storyboard['directorsBrief']>['voiceover']): VoiceoverDirectorNotes {
-  return {
+  return sanitizeDirectorNotes({
     style: [brief.narratorPersona, brief.emotionalArc, brief.deliveryStyle].filter(Boolean).join('. '),
     pacing: brief.pacing,
     accent: brief.accent,
-  };
+  }) ?? { style: '', pacing: '', accent: '' };
 }
 
 // ─── Script Builder ───────────────────────────────────────────────────────────
@@ -27,7 +62,14 @@ export function buildVoiceoverScript(
   language: import('@content-creator/shared').Language = 'th',
   stageConfig?: VoiceoverStageConfig,
 ): VoiceoverConfig {
-  const resolvedVoice = stageConfig?.voice ?? voice;
+  // Voice selection priority:
+  // 1. User override (stageConfig.voice) — highest priority
+  // 2. AI recommendation from storyboard (directorsBrief.voiceover.recommendedVoice)
+  // 3. Project default voice — fallback
+  const resolvedVoice = stageConfig?.voice 
+    ?? storyboard.directorsBrief?.voiceover.recommendedVoice 
+    ?? voice;
+  
   const scenes: VoiceoverSceneConfig[] = storyboard.scenes.map(s => ({
     sceneId: s.id,
     narration: stageConfig?.sceneNarrations?.[String(s.id)] ?? s.narration,
@@ -39,7 +81,7 @@ export function buildVoiceoverScript(
     (stageConfig.directorNotes.style || stageConfig.directorNotes.pacing || stageConfig.directorNotes.accent);
   const autoNotes = !hasCustomNotes && storyboard.directorsBrief
     ? briefToDirectorNotes(storyboard.directorsBrief.voiceover)
-    : stageConfig?.directorNotes;
+    : sanitizeDirectorNotes(stageConfig?.directorNotes);
 
   return {
     script: scenes.map(s => s.narration).join('\n\n'),
@@ -153,52 +195,193 @@ function pcmToWav(pcmBase64: string, sampleRate = 24000, channels = 1, bitsPerSa
   return Buffer.concat([header, pcm]);
 }
 
+function decodeTtsAudioToWavBuffer(audioBase64: string, mimeType: string): Buffer {
+  const normalizedMime = mimeType.toLowerCase();
+
+  // Gemini TTS may return MP3, WAV, or raw PCM depending on model/version.
+  if (normalizedMime.includes('mp3') || normalizedMime.includes('mpeg')) {
+    return Buffer.from(audioBase64, 'base64');
+  }
+  if (normalizedMime.includes('wav') || normalizedMime.includes('wave')) {
+    return Buffer.from(audioBase64, 'base64');
+  }
+  // Fallback: treat as PCM and wrap in WAV header.
+  return pcmToWav(audioBase64);
+}
+
+function toVerificationAudio(audioBase64: string, mimeType: string): { mimeType: string; data: string } {
+  const normalizedMime = mimeType.toLowerCase();
+  if (normalizedMime.includes('mp3') || normalizedMime.includes('mpeg')) {
+    return { mimeType: 'audio/mp3', data: audioBase64 };
+  }
+  if (normalizedMime.includes('wav') || normalizedMime.includes('wave')) {
+    return { mimeType: 'audio/wav', data: audioBase64 };
+  }
+  return { mimeType: 'audio/wav', data: pcmToWav(audioBase64).toString('base64') };
+}
+
+function shouldUseStrictSceneCompliance(model: string): boolean {
+  return model.includes('gemini-3.1-flash-tts-preview');
+}
+
+async function verifySceneNarrationCompliance(
+  sceneId: number,
+  language: import('@content-creator/shared').Language,
+  expectedNarration: string,
+  audioBase64: string,
+  mimeType: string,
+): Promise<{ pass: boolean; reason: string }> {
+  const verificationAudio = toVerificationAudio(audioBase64, mimeType);
+  const checkPrompt = [
+    'You are an audio QA checker for TTS scene compliance.',
+    `Scene ID: ${sceneId}`,
+    `Language: ${language}`,
+    'Task: Compare the expected script and the audio narration.',
+    'Pass ONLY if the audio speaks the expected script for this scene and does not include added content from other scenes.',
+    'Allow minor pronunciation differences and tiny filler words only.',
+    'Return JSON only: {"pass": boolean, "reason": string}',
+    '',
+    'EXPECTED SCRIPT:',
+    expectedNarration,
+  ].join('\n');
+
+  const verifyResp = await ai.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: [{
+      parts: [
+        { text: checkPrompt },
+        { inlineData: { mimeType: verificationAudio.mimeType, data: verificationAudio.data } },
+      ],
+    }],
+    config: { responseMimeType: 'application/json' },
+  });
+
+  const raw = verifyResp.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
+  if (!raw) return { pass: false, reason: 'empty verification response' };
+
+  try {
+    const parsed = JSON.parse(raw) as { pass?: boolean; reason?: string };
+    return {
+      pass: parsed.pass === true,
+      reason: parsed.reason?.trim() || (parsed.pass ? 'pass' : 'failed'),
+    };
+  } catch {
+    const upper = raw.toUpperCase();
+    if (upper.includes('"PASS":TRUE') || upper.includes('PASS')) {
+      return { pass: true, reason: raw };
+    }
+    return { pass: false, reason: raw };
+  }
+}
+
 // ─── TTS for a single scene ───────────────────────────────────────────────────
 
-function buildTtsPrompt(narration: string, directorNotes?: VoiceoverDirectorNotes): string {
-  if (!directorNotes || (!directorNotes.style && !directorNotes.pacing && !directorNotes.accent)) {
-    return narration;
-  }
-  // Keep notes concise — long instructions confuse TTS and hurt clarity
+function buildTtsPrompt(
+  sceneId: number,
+  narration: string,
+  directorNotes?: VoiceoverDirectorNotes,
+  strictness = 1,
+): string {
+  const trimmedNarration = narration.trim();
+  const safeNotes = sanitizeDirectorNotes(directorNotes);
+
+  // Keep direction concise — long control text can reduce TTS compliance.
   const noteParts: string[] = [];
-  if (directorNotes.style)  noteParts.push(directorNotes.style);
-  if (directorNotes.pacing) noteParts.push(`Pacing: ${directorNotes.pacing}`);
-  if (directorNotes.accent) noteParts.push(`Accent: ${directorNotes.accent}`);
-  const noteBlock = noteParts.join('. ');
-  return `<voice_direction>${noteBlock}</voice_direction>\n\n${narration}`;
+  if (safeNotes?.style) noteParts.push(safeNotes.style);
+  if (safeNotes?.pacing) noteParts.push(`Pacing: ${safeNotes.pacing}`);
+  if (safeNotes?.accent) noteParts.push(`Accent: ${safeNotes.accent}`);
+
+  const direction = noteParts.length > 0
+    ? noteParts.join('. ')
+    : 'Neutral, clear narration with stable tone and pacing.';
+
+  return [
+    'You are a TTS narrator for a short-form video pipeline.',
+    `Current scene: ${sceneId}`,
+    'Rules:',
+    '1) Speak ONLY the exact text inside <narration>.',
+    '2) Do NOT add, paraphrase, continue, summarize, or merge content from any other scene.',
+    '3) Keep vocal identity, pacing, and tone consistent with the provided direction.',
+    '4) Do NOT speak XML tags or metadata.',
+    ...(strictness > 1
+      ? ['5) If uncertain, prioritize verbatim reading of <narration> over any stylistic interpretation.']
+      : []),
+    '<voice_direction>',
+    direction,
+    '</voice_direction>',
+    '<narration>',
+    trimmedNarration,
+    '</narration>',
+  ].join('\n');
 }
 
 async function generateSceneAudio(
+  sceneId: number,
   narration: string,
   voiceName: string,
   model: string,
+  language: import('@content-creator/shared').Language,
   directorNotes?: VoiceoverDirectorNotes,
 ): Promise<{ audioBase64: string; mimeType: string; tokens: number }> {
-  const prompt = buildTtsPrompt(narration, directorNotes);
-  const response = await ai.models.generateContent({
-    model,
-    contents: [{ parts: [{ text: prompt }] }],
-    config: {
-      responseModalities: ['AUDIO'],
-      speechConfig: {
-        voiceConfig: {
-          prebuiltVoiceConfig: { voiceName },
+  const strictCompliance = shouldUseStrictSceneCompliance(model);
+  const maxAttempts = strictCompliance ? 3 : 1;
+  let totalTokens = 0;
+  let lastFailureReason = '';
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const prompt = buildTtsPrompt(sceneId, narration, directorNotes, attempt);
+    const response = await ai.models.generateContent({
+      model,
+      contents: [{ parts: [{ text: prompt }] }],
+      config: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName },
+          },
         },
       },
-    },
-  });
+    });
 
-  const audioPart = response.candidates?.[0]?.content?.parts?.find(
-    p => p.inlineData?.mimeType?.startsWith('audio/')
+    totalTokens += response.usageMetadata?.totalTokenCount ?? 0;
+
+    const audioPart = response.candidates?.[0]?.content?.parts?.find(
+      p => p.inlineData?.mimeType?.startsWith('audio/')
+    );
+    const inlineData = audioPart?.inlineData;
+    if (!inlineData?.data) throw new Error('Empty audio response from Gemini TTS');
+
+    if (!strictCompliance) {
+      return {
+        audioBase64: inlineData.data,
+        mimeType: inlineData.mimeType ?? '',
+        tokens: totalTokens,
+      };
+    }
+
+    const compliance = await verifySceneNarrationCompliance(
+      sceneId,
+      language,
+      narration,
+      inlineData.data,
+      inlineData.mimeType ?? '',
+    ).catch(() => ({ pass: false, reason: 'verification request failed' }));
+
+    if (compliance.pass) {
+      return {
+        audioBase64: inlineData.data,
+        mimeType: inlineData.mimeType ?? '',
+        tokens: totalTokens,
+      };
+    }
+
+    lastFailureReason = compliance.reason;
+  }
+
+  throw new Error(
+    `Scene ${sceneId} TTS failed strict script compliance after ${maxAttempts} attempts` +
+    (lastFailureReason ? `: ${lastFailureReason}` : '')
   );
-  const inlineData = audioPart?.inlineData;
-  if (!inlineData?.data) throw new Error('Empty audio response from Gemini TTS');
-
-  return {
-    audioBase64: inlineData.data,
-    mimeType: inlineData.mimeType ?? '',
-    tokens: response.usageMetadata?.totalTokenCount ?? 0,
-  };
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -240,14 +423,18 @@ export async function generateVoiceover(
       intermediateFiles.push(rawFile);  // only raw is cleaned up
 
       // Call TTS
-      const { audioBase64, mimeType, tokens } = await generateSceneAudio(scene.narration, voiceName, model, config.directorNotes);
+      const { audioBase64, mimeType, tokens } = await generateSceneAudio(
+        scene.sceneId,
+        scene.narration,
+        voiceName,
+        model,
+        config.language,
+        config.directorNotes,
+      );
       totalTokens += tokens;
 
       // Decode → WAV
-      const isMp3 = mimeType.includes('mp3');
-      const wavBuffer = isMp3
-        ? Buffer.from(audioBase64, 'base64')
-        : pcmToWav(audioBase64);
+      const wavBuffer = decodeTtsAudioToWavBuffer(audioBase64, mimeType);
       fs.writeFileSync(rawFile, wavBuffer);
 
       // Fit to target duration — returns actual output duration
@@ -382,9 +569,15 @@ export async function regenerateSingleSceneVoiceover(
 
   try {
     // Generate TTS for this single scene
-    const { audioBase64, mimeType, tokens: _ } = await generateSceneAudio(narration, voiceName, model, stageConfig.directorNotes);
-    const isMp3 = mimeType.includes('mp3');
-    const wavBuffer = isMp3 ? Buffer.from(audioBase64, 'base64') : pcmToWav(audioBase64);
+    const { audioBase64, mimeType, tokens: _ } = await generateSceneAudio(
+      sceneId,
+      narration,
+      voiceName,
+      model,
+      project.input.language,
+      stageConfig.directorNotes,
+    );
+    const wavBuffer = decodeTtsAudioToWavBuffer(audioBase64, mimeType);
     fs.writeFileSync(rawFile, wavBuffer);
 
     const actualAudioDuration = await fitAudio(rawFile, fittedFile, targetScene.duration);

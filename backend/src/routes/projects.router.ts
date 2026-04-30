@@ -6,7 +6,7 @@ import { validate } from '../middleware/validate.middleware.js';
 import { buildStoryboardPrompt } from '../pipeline/stage1-storyboard.js';
 import { estimateTotalCost, durationToSceneCount } from '../utils/cost.calculator.js';
 import { cleanupProjectTemp, cleanupProjectOutput } from '../utils/file.helper.js';
-import { DURATION_VALUES } from '@content-creator/shared';
+import { DURATION_VALUES, TTS_VOICES } from '@content-creator/shared';
 import type { CreateProjectResponse } from '@content-creator/shared';
 
 export const projectsRouter = Router();
@@ -19,7 +19,7 @@ const CreateProjectSchema = z.object({
   duration: z.enum(DURATION_VALUES),
   style: z.enum(['cinematic', 'educational', 'promotional', 'documentary']),
   language: z.enum(['en', 'th', 'ja', 'zh', 'ko']),
-  voice: z.enum(['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede']),
+  voice: z.enum(TTS_VOICES as [string, ...string[]]),
   includeMusic: z.boolean(),
 });
 

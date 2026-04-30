@@ -25,7 +25,6 @@ export type Platform = 'youtube' | 'tiktok' | 'instagram' | 'linkedin';
 export type Duration = (typeof DURATION_VALUES)[number];
 export type Style = 'cinematic' | 'educational' | 'promotional' | 'documentary';
 export type Language = 'en' | 'th' | 'ja' | 'zh' | 'ko';
-export type Voice = 'Puck' | 'Charon' | 'Kore' | 'Fenrir' | 'Aoede';
 
 // ─── Stage Model Config ───────────────────────────────────────────────────────
 
@@ -39,6 +38,7 @@ export type TtsVoice =
   | 'Despina' | 'Erinome' | 'Algenib' | 'Rasalgethi' | 'Laomedeia' | 'Achernar'
   | 'Alnilam' | 'Schedar' | 'Gacrux' | 'Pulcherrima' | 'Achird' | 'Zubenelgenubi'
   | 'Vindemiatrix' | 'Sadachbia' | 'Sadaltager' | 'Sulafat';
+export type Voice = TtsVoice; // Supports all 30 voices
 export type MusicModel     = 'lyria-3-clip-preview' | 'lyria-3-pro-preview';
 
 export interface StageModelConfig {

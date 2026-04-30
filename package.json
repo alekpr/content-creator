@@ -10,9 +10,55 @@
   "scripts": {
     "dev": "concurrently -n backend,frontend -c cyan,magenta \"npm run dev --workspace=backend\" \"npm run dev --workspace=frontend\"",
     "build": "npm run build --workspace=shared && npm run build --workspace=backend && npm run build --workspace=frontend",
-    "lint": "npm run lint --workspace=backend && npm run lint --workspace=frontend"
+    "lint": "npm run lint --workspace=backend && npm run lint --workspace=frontend",
+
+    "electron:compile": "tsc -p tsconfig.electron.json",
+    "electron:dev": "npm run electron:compile && concurrently -n frontend,electron -c magenta,blue \"npm run dev --workspace=frontend\" \"electron electron-dist/main.js\"",
+    "electron:build": "npm run build && npm run electron:compile",
+    "electron:package": "npm run electron:build && electron-builder --mac",
+    "electron:package:arm64": "npm run electron:build && electron-builder --mac --arm64",
+    "electron:package:x64": "npm run electron:build && electron-builder --mac --x64"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "concurrently": "^9.1.2",
+    "electron": "^35.0.0",
+    "electron-builder": "^25.0.0",
+    "@types/electron": "^1.6.10"
+  },
+  "build": {
+    "appId": "com.contentcreator.app",
+    "productName": "Content Creator",
+    "asar": false,
+    "extraMetadata": {
+      "main": "electron-dist/main.js"
+    },
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "electron-dist/**",
+      "backend/dist/**",
+      "backend/package.json",
+      "frontend/dist/**",
+      "shared/dist/**",
+      "node_modules/**",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] }
+      ],
+      "category": "public.app-category.productivity",
+      "darkModeSupport": true,
+      "icon": "assets/icon.icns"
+    },
+    "dmg": {
+      "title": "Content Creator",
+      "contents": [
+        { "x": 130, "y": 220 },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+      ]
+    }
   }
 }

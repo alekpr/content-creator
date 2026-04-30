@@ -6,7 +6,8 @@ const EnvSchema = z.object({
   MONGODB_URI: z.string().min(1, 'MONGODB_URI is required'),
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
   GEMINI_API_KEY: z.string().min(10, 'GEMINI_API_KEY is required'),
-  FRONTEND_URL: z.string().url('FRONTEND_URL must be a valid URL'),
+  // In Electron mode this is overridden programmatically by the main process
+  FRONTEND_URL: z.string().url('FRONTEND_URL must be a valid URL').default('http://localhost:5173'),
   TEMP_DIR: z.string().default('./temp'),
   OUTPUT_DIR: z.string().default('./output'),
   FFMPEG_PATH: z.string().default('/opt/homebrew/bin/ffmpeg'),

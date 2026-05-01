@@ -1,9 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 import ffmpeg from 'fluent-ffmpeg';
-
-// Set system ffmpeg path for fluent-ffmpeg
-ffmpeg.setFfmpegPath(env.FFMPEG_PATH);
 import { ProjectModel } from '../models/Project.model.js';
 import { emitProjectComplete } from '../socket/socket.handler.js';
 import { env } from '../config/env.js';
@@ -20,6 +17,7 @@ export async function assembleVideo(
   onProgress: (percent: number) => void,
   sceneTimings?: VoiceoverSceneTiming[],
 ): Promise<AssemblyResult> {
+  ffmpeg.setFfmpegPath(env.FFMPEG_PATH);
   const tempDir = path.join(env.TEMP_DIR, projectId);
   const outputDir = env.OUTPUT_DIR;
   fs.mkdirSync(outputDir, { recursive: true });

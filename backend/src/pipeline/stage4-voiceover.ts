@@ -8,7 +8,6 @@ import { ensureDir } from '../utils/file.helper.js';
 import { env } from '../config/env.js';
 import type { Storyboard, VoiceoverConfig, VoiceoverDirectorNotes, VoiceoverResult, VoiceoverSceneAudio, VoiceoverSceneConfig, VoiceoverSceneTiming, VoiceoverStageConfig } from '@content-creator/shared';
 
-ffmpeg.setFfmpegPath(env.FFMPEG_PATH);
 
 function sanitizeDirectorNoteText(text?: string): string {
   if (!text) return '';
@@ -96,6 +95,7 @@ export function buildVoiceoverScript(
 // ─── FFmpeg Audio Helpers ─────────────────────────────────────────────────────
 
 function getAudioDuration(filePath: string): Promise<number> {
+  ffmpeg.setFfmpegPath(env.FFMPEG_PATH);
   return new Promise((resolve, reject) => {
     ffmpeg.ffprobe(filePath, (err, meta) => {
       if (err) return reject(err);

@@ -8,8 +8,6 @@ import { ensureDir } from '../utils/file.helper.js';
 import { env } from '../config/env.js';
 import type { MusicResult, VoiceoverResult } from '@content-creator/shared';
 
-ffmpeg.setFfmpegPath(env.FFMPEG_PATH);
-
 const MUSIC_TAIL_SECONDS = 1.5;
 const DURATION_EPSILON_SECONDS = 0.15;
 const MUSIC_END_FADE_SECONDS = 0.6;
@@ -22,6 +20,7 @@ export async function generateMusic(
   onProgress: (msg: string) => void,
   model = 'lyria-3-clip-preview'
 ): Promise<MusicResult> {
+  ffmpeg.setFfmpegPath(env.FFMPEG_PATH);
   const startTime = Date.now();
 
   const project = await ProjectModel.findById(projectId);

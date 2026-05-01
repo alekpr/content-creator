@@ -13,7 +13,7 @@
     "lint": "npm run lint --workspace=backend && npm run lint --workspace=frontend",
 
     "electron:compile": "tsc -p tsconfig.electron.json",
-    "electron:dev": "npm run electron:compile && concurrently -n frontend,electron -c magenta,blue \"npm run dev --workspace=frontend\" \"electron electron-dist/main.js\"",
+    "electron:dev": "npm run electron:compile && concurrently -n frontend,electron -c magenta,blue \"npm run dev --workspace=frontend\" \"env -u NODE_OPTIONS electron electron-dist/main.js\"",
     "electron:build": "npm run build && npm run electron:compile",
     "electron:package": "npm run electron:build && electron-builder --mac",
     "electron:package:arm64": "npm run electron:build && electron-builder --mac --arm64",

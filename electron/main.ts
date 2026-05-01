@@ -27,6 +27,7 @@ const VITE_PORT = 5173;
 
 let mainWindow: BrowserWindow | null = null;
 let backendProcess: ChildProcess | null = null;
+let isQuitting = false;
 
 // ─── Env helpers ──────────────────────────────────────────────────────────────
 
@@ -133,7 +134,7 @@ function spawnBackend(): void {
 
   backendProcess.on('exit', (code, signal) => {
     console.log(`[Electron] Backend exited (code=${code ?? 'null'}, signal=${signal ?? 'none'})`);
-    if (code !== 0 && code !== null && !app.isQuitting) {
+    if (code !== 0 && code !== null && !isQuitting) {
       void dialog.showErrorBox(
         'Backend crashed',
         `The application backend exited unexpectedly (exit code ${code}).\n\n` +
@@ -262,17 +263,10 @@ async function bootstrap(): Promise<void> {
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 
-// Extend the Electron app type to carry quit state
-declare module 'electron' {
-  interface App {
-    isQuitting?: boolean;
-  }
-}
-
 app.whenReady().then(() => void bootstrap());
 
 app.on('before-quit', () => {
-  app.isQuitting = true;
+  isQuitting = true;
   stopBackend();
 });
 

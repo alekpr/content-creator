@@ -106,6 +106,30 @@ function buildBackendEnv(): NodeJS.ProcessEnv {
 
 // ─── Backend process management ───────────────────────────────────────────────
 
+/**
+ * Find the system Node.js binary for spawning the backend.
+ * `process.execPath` in a packaged Electron app is the Electron binary itself,
+ * not Node.js — so we must locate the real node executable separately.
+ */
+function findNodeBin(): string {
+  const { execFileSync } = require('child_process') as typeof import('child_process');
+  // Common macOS install locations (NVM, Homebrew, system)
+  const candidates = [
+    '/opt/homebrew/bin/node',  // Apple Silicon Homebrew
+    '/usr/local/bin/node',     // Intel Homebrew / nvm symlink
+    '/usr/bin/node',
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  // Fall back to PATH resolution
+  try {
+    return execFileSync('which', ['node'], { encoding: 'utf8', env: process.env }).trim();
+  } catch {
+    return 'node';
+  }
+}
+
 function spawnBackend(): void {
   const backendEnv = buildBackendEnv();
   const backendDir = path.join(__dirname, '../backend');
@@ -119,10 +143,12 @@ function spawnBackend(): void {
       { env: backendEnv, cwd: backendDir, stdio: 'inherit' },
     );
   } else {
-    // Production: run the pre-compiled CommonJS bundle
+    // Production: run the pre-compiled CommonJS bundle via system Node.js
+    // (process.execPath is the Electron binary in packaged apps, not Node)
     const serverJs = path.join(__dirname, '../backend/dist/server.js');
+    const nodeBin = findNodeBin();
     backendProcess = spawn(
-      process.execPath,   // Electron's bundled Node.js binary
+      nodeBin,
       [serverJs],
       { env: backendEnv, cwd: path.dirname(serverJs), stdio: 'inherit' },
     );

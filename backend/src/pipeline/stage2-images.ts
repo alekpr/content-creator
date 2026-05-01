@@ -45,9 +45,8 @@ function buildGlobalImageStylePrefix(storyboard: Storyboard): string[] {
 // dimensions regardless of the text prompt. We must resize the reference
 // to the correct orientation before sending it.
 
-const FFMPEG_BIN = env.FFMPEG_PATH;
-
 function resizeRefToTarget(inputBuf: Buffer, targetW: number, targetH: number, inputExt = 'png'): Buffer {
+  const ffmpegBin = env.FFMPEG_PATH;
   const tag = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
   const tmpIn  = path.join(os.tmpdir(), `ref_in_${tag}.${inputExt}`);
   const tmpOut = path.join(os.tmpdir(), `ref_out_${tag}.png`);
@@ -55,7 +54,7 @@ function resizeRefToTarget(inputBuf: Buffer, targetW: number, targetH: number, i
     fs.writeFileSync(tmpIn, inputBuf);
     // scale to cover target dimensions, then center-crop to exact size
     execSync(
-      `${FFMPEG_BIN} -y -i "${tmpIn}" -vf "scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH}" -frames:v 1 "${tmpOut}"`,
+      `${ffmpegBin} -y -i "${tmpIn}" -vf "scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH}" -frames:v 1 "${tmpOut}"`,
       { stdio: 'pipe' }
     );
     return fs.readFileSync(tmpOut);

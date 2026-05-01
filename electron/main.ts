@@ -19,9 +19,20 @@ import fs from 'fs';
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const isDev = !app.isPackaged;
-const BACKEND_PORT = 3001;
-const BACKEND_URL = `http://localhost:${BACKEND_PORT}`;
-const VITE_PORT = 5173;
+const DEFAULT_BACKEND_PORT = 3001;
+const DEFAULT_VITE_PORT = 5173;
+
+let backendPort = DEFAULT_BACKEND_PORT;
+let vitePort = DEFAULT_VITE_PORT;
+
+function getBackendUrl(): string {
+  return `http://localhost:${backendPort}`;
+}
+
+function parsePort(raw: string | undefined, fallback: number): number {
+  const value = Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -71,15 +82,18 @@ function buildBackendEnv(): NodeJS.ProcessEnv {
 
   const fileEnv = parseEnvFile(envFilePath);
 
+  backendPort = parsePort(process.env.BACKEND_PORT ?? process.env.PORT ?? fileEnv.BACKEND_PORT ?? fileEnv.PORT, DEFAULT_BACKEND_PORT);
+  vitePort = parsePort(process.env.VITE_PORT ?? process.env.FRONTEND_PORT ?? fileEnv.VITE_PORT ?? fileEnv.FRONTEND_PORT, DEFAULT_VITE_PORT);
+
   const electronOverrides: Record<string, string> = {
     NODE_ENV: isDev ? 'development' : 'production',
-    PORT: String(BACKEND_PORT),
+    PORT: String(backendPort),
 
     // CORS origin — in dev: allow Vite dev server
     //               in prod: backend serves the frontend on the same origin
     FRONTEND_URL: isDev
-      ? `http://localhost:${VITE_PORT}`
-      : `http://localhost:${BACKEND_PORT}`,
+      ? `http://localhost:${vitePort}`
+      : `http://localhost:${backendPort}`,
 
     // File storage — use backend local dirs in dev, userData in production
     TEMP_DIR: isDev
@@ -183,7 +197,7 @@ async function waitForBackend(maxMs = 25_000): Promise<boolean> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${BACKEND_URL}/health`);
+      const res = await fetch(`${getBackendUrl()}/health`);
       if (res.ok) return true;
     } catch {
       // backend not ready yet — keep polling
@@ -219,8 +233,8 @@ function createWindow(): void {
   // Prevent navigation to unexpected URLs; open external links in browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     const isInternal =
-      url.startsWith(`http://localhost:${VITE_PORT}`) ||
-      url.startsWith(BACKEND_URL);
+      url.startsWith(`http://localhost:${vitePort}`) ||
+      url.startsWith(getBackendUrl());
     if (isInternal) return { action: 'allow' };
     void shell.openExternal(url);
     return { action: 'deny' };
@@ -228,8 +242,8 @@ function createWindow(): void {
 
   mainWindow.webContents.on('will-navigate', (evt, url) => {
     const isInternal =
-      url.startsWith(`http://localhost:${VITE_PORT}`) ||
-      url.startsWith(BACKEND_URL) ||
+      url.startsWith(`http://localhost:${vitePort}`) ||
+      url.startsWith(getBackendUrl()) ||
       url.startsWith('file://');
     if (!isInternal) {
       evt.preventDefault();
@@ -279,11 +293,11 @@ async function bootstrap(): Promise<void> {
 
   if (isDev) {
     // Development: load the Vite dev server for hot module replacement
-    await mainWindow!.loadURL(`http://localhost:${VITE_PORT}`);
+    await mainWindow!.loadURL(`http://localhost:${vitePort}`);
     mainWindow!.webContents.openDevTools({ mode: 'detach' });
   } else {
     // Production: backend serves the built frontend — same origin, no CORS
-    await mainWindow!.loadURL(BACKEND_URL);
+    await mainWindow!.loadURL(getBackendUrl());
   }
 }
 
